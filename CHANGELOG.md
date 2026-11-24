@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VR: sharpen headset images, support square source resolutions, inset the HUD and retain stereo through primary scripted cameras.
+
 - VR: add perspective and screenshot shortcuts, native first-person body fading and raised automatic reading panels.
 
 - VR: keep native lens aspect across scene passes and preserve stereo pairs when stationary camera matrices repeat.

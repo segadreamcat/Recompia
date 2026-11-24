@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Draws of the replay: pipeline keys, dynamic state and its shadow, begin_draw, primitive conversion, direct, indirect and feedback draws.
 #include "nvn_replay_internal.h"
+#include "nxrt/ui_layer.h"
 
 namespace nxrt::nvn::be::gpu {
 namespace replay {
 CmdState g_cmd;
 void CmdState::begin_submit() {
+    ui_scale = 1.f;
     bound_pipeline = VK_NULL_HANDLE;
     dirty = kAllDirty;
     pl = nullptr;
@@ -95,6 +97,12 @@ static void set_viewports_and_scissors() {
         float x = S.vp[i][0], y = S.vp[i][1], w = S.vp[i][2], h = S.vp[i][3];
         if (!S.nvp) { x = 0; y = 0; w = static_cast<float>(P.extent.width); h = static_cast<float>(P.extent.height); }
         else if (P.scale != 1.0f) { x *= P.scale; y *= P.scale; w *= P.scale; h *= P.scale; }
+        if (g_cmd.ui_scale != 1.f) {
+            const float scale = g_cmd.ui_scale;
+            x = (1.f-scale) * P.extent.width * .5f + x*scale;
+            y = (1.f-scale) * P.extent.height * .5f + y*scale;
+            w *= scale; h *= scale;
+        }
         // Upper-left origin: window y is the image row from the top and NDC +y is the top edge of the rectangle (negative height).
         // Lower-left origin (the GL convention): window y 0 is memory row 0 and NDC -y is the first row, so no flip.
         const bool lower_left = S.window_origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
@@ -102,6 +110,14 @@ static void set_viewports_and_scissors() {
                            : VkViewport{x, y + h, w, -h, S.dr[i][0], S.dr[i][1]};
         if (i < S.nsc) sc[i] = scissor_rect(S.sc[i]);
         else sc[i] = {{0, 0}, P.extent};
+        if (g_cmd.ui_scale != 1.f) {
+            const float scale = g_cmd.ui_scale;
+            const int32_t x0 = static_cast<int32_t>(std::floor((1.f-scale)*P.extent.width*.5f + sc[i].offset.x*scale));
+            const int32_t y0 = static_cast<int32_t>(std::floor((1.f-scale)*P.extent.height*.5f + sc[i].offset.y*scale));
+            const int32_t x1 = static_cast<int32_t>(std::ceil((1.f-scale)*P.extent.width*.5f + (sc[i].offset.x+sc[i].extent.width)*scale));
+            const int32_t y1 = static_cast<int32_t>(std::ceil((1.f-scale)*P.extent.height*.5f + (sc[i].offset.y+sc[i].extent.height)*scale));
+            sc[i] = {{x0, y0}, {static_cast<uint32_t>(x1-x0), static_cast<uint32_t>(y1-y0)}};
+        }
     }
     if (bind_coalesce_on()) {
         // compare the whole arrays (the unused tail is zero) and the count
@@ -467,6 +483,9 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
     { RpScope rp_(kRpPass); pass_ok = ensure_pass(want_ro, g_copies.fbl_want); }
     if (!pass_ok) { log_once(kOnceDrawNoTarget, "draw without a usable render target skipped"); return false; }
     if (ui_skip_draw(vs)) return false;   // after the pass is begun, so its clears and loads still happen (nxrt/ui_layer.h)
+    const float requested_ui_scale = ui_layer::scale();
+    const float ui_scale = requested_ui_scale != 1.f && ui_is_draw(vs) ? requested_ui_scale : 1.f;
+    if (g_cmd.ui_scale != ui_scale) { g_cmd.ui_scale = ui_scale; g_cmd.dirty |= kDynVp; }
     if (g_cmd.prog_writes || g_xfb.active) g_bar.pass_unsafe = true;
     const VkPrimitiveTopology topo = vk_topology(mode);
     if ((g_cmd.dirty & kPipe) || topo != g_cmd.pipe_topo || !g_cmd.pipe || g_pipe_fbl != (P.fbl != 0)) {

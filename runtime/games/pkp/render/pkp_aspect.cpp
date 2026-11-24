@@ -2,6 +2,7 @@
 // Game layer, play mode: display aspects other than 16:9 (ultrawide, 16:10) for the scene cameras and the UI layout camera (split out
 // of pkp_play.cpp).
 #include "input/pkp_play_internal.h"
+#include "render/pkp_vr_camera.h"
 
 #include <cmath>
 #include <cstdint>
@@ -53,6 +54,7 @@ void remember_cam(uint64_t cam) {
 // Widens (or heightens) one camera's projection and view-projection from 16:9 to the display's aspect. Idempotent: a camera already at the
 // display's shape, or at any shape other than 16:9, is left alone.
 void fix_camera(uint64_t cam) {
+    if (vr_camera::owns_projection(cam)) return;
     Wide& w = wide();
     float* P = reinterpret_cast<float*>(cam + kCamProj);
     const float p00 = P[0], p11 = P[5];
@@ -105,6 +107,7 @@ int cam_index(uint64_t cam) {
 // aspect, +332 = aspect, so P[0][0] = cot(fov' / 2) / aspect is the 16:9 one and P[1][1] grows. fov_put[] remembers what was written: a
 // FOV that differs is a new game value (zoom, cutscene) and is converted again; ours is never converted twice.
 void taller_fields(uint64_t cam) {
+    if (vr_camera::owns_projection(cam)) return;
     Wide& w = wide();
     const int i = cam_index(cam);
     if (i < 0 || (rd<uint32_t>(cam + 344) & 1)) return;   // unknown, or orthographic

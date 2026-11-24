@@ -10,6 +10,9 @@ namespace nxrt::ui_layer {
 
 bool supported();          // the game's rendering lets its 2D be told from its picture (game::Render::ui_after_picture)
 void set_visible(bool v);  // false: hide the game's 2D from the next draw on; ignored when !supported()
+// Scale the final 2D layer about the image centre, preserving its internal layout and clips. 1 keeps the native viewport.
+void set_scale(float scale);
+float scale();
 bool hidden();             // one relaxed atomic load: the replay asks it at every draw
 
 }  // namespace nxrt::ui_layer

@@ -18,6 +18,8 @@
         {"key": "vr_first_person", "type": "bool", "default": "1", "env": "NXRT_PKP_VR_FIRST_PERSON", "doc": "In VR, use first person; right-stick click or F11 switches to the follow-camera position."},
         {"key": "vr_auto_reading", "type": "bool", "default": "1", "env": "NXRT_PKP_VR_AUTO_READING", "doc": "In VR, show conversations and menus on a raised reading panel when camera controls are locked."},
         {"key": "vr_shortcuts", "type": "bool", "default": "1", "env": "NXRT_PKP_VR_SHORTCUTS", "doc": "VR shortcuts: right-stick click/F11 changes view; short left-stick click/F12 captures a screenshot."},
+        {"key": "vr_sharpness", "type": "real", "default": "0", "min": 0, "max": 1, "clamped": true, "env": "NXRT_PKP_VR_SHARPNESS", "doc": "Contrast-adaptive sharpening of the headset world image, 0 off to 1 strongest; independent of desktop upscaling."},
+        {"key": "vr_hud_scale", "type": "real", "default": "1", "min": 0.35, "max": 1, "clamped": true, "env": "NXRT_PKP_VR_HUD_SCALE", "doc": "HUD size inside VR eye images; 0.55 keeps edge widgets in the binocular visible area, 1 keeps the native layout."},
         {"key": "menu_mouse", "type": "bool", "default": "1", "env": "NXRT_PKP_MENU_MOUSE", "doc": "The mouse pointer in the game's menus. Next start."},
         {"key": "menu_log", "type": "int", "default": "1", "env": "NXRT_PKP_MENU_LOG", "doc": "Menu logging: 0 off, 1 what the pointer does (and the sort's and search's lists), 2 more detail, 3 the layout chain once a second. Next start."},
         {"key": "menu_in_game", "type": "bool", "default": "1", "env": "NXRT_PKP_MENU_IN_GAME", "doc": "The mouse pointer also works in menus opened during play. Next start."},

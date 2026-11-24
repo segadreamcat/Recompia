@@ -197,6 +197,8 @@ play::Act menu_frame(bool menu_up, const play::mm::Geometry& g) {
 
 bool menu_over_value() { return st().active && st().slider >= 0; }
 
+bool menu_has_selection() { return st().active && st().cursor >= 0 && st().focused >= 0; }
+
 bool menu_active() { return st().active; }
 
 

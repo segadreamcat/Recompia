@@ -37,6 +37,8 @@ enum class Key : uint8_t {
     VrFirstPerson,
     VrAutoReading,
     VrShortcuts,
+    VrSharpness,
+    VrHudScale,
     // the menu pointer (pkp_menu.cpp) and the prompt icons (pkp_kbm.cpp)
     MenuMouse,
     MenuLog,

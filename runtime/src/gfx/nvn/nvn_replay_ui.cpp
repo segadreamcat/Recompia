@@ -26,14 +26,15 @@ void replay_note_presented(Texture* t) {
 
 namespace replay {
 
-bool ui_skip_draw(const ShaderInfo* vs) {
-    if (!ui_layer::hidden()) return false;
+bool ui_is_draw(const ShaderInfo* vs) {
     if (!vs || vs->refl.vertex_inputs().empty() || S.ncolor == 0 || !S.color_tex[0] || g_xfb.active) return false;
     Texture* target = S.color_tex[0].get();
     for (const Ref<Texture>& r : g_presented.tex)
         if (shares_image(target, r.get())) return true;
     return false;
 }
+
+bool ui_skip_draw(const ShaderInfo* vs) { return ui_layer::hidden() && ui_is_draw(vs); }
 
 void ui_shutdown() { g_presented = Presented(); }
 

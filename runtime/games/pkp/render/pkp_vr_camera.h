@@ -7,6 +7,8 @@ namespace nxrt::games::pkp {
 
 extern const Feature kVrCameraFeature;
 namespace vr_camera {
+// True while VR owns this source lens; other aspect hooks must leave it alone.
+bool owns_projection(uint64_t camera);
 // Right-hand aim in game coordinates; head aim while the controller is untracked. False outside a recently updated VR view.
 bool aim_ray(float eye[3], float direction[3]);
 }

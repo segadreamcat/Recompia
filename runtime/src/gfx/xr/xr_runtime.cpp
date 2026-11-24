@@ -76,7 +76,8 @@ bool load_instance_fns() {
     XrInstance i = st.instance;
     Fns& f = st.f;
     return load_fn(i, "xrDestroyInstance", &f.DestroyInstance) && load_fn(i, "xrGetSystem", &f.GetSystem) &&
-           load_fn(i, "xrGetSystemProperties", &f.GetSystemProperties) && load_fn(i, "xrCreateSession", &f.CreateSession) &&
+           load_fn(i, "xrGetSystemProperties", &f.GetSystemProperties) &&
+           load_fn(i, "xrEnumerateViewConfigurationViews", &f.EnumerateViewConfigurationViews) && load_fn(i, "xrCreateSession", &f.CreateSession) &&
            load_fn(i, "xrDestroySession", &f.DestroySession) && load_fn(i, "xrBeginSession", &f.BeginSession) &&
            load_fn(i, "xrEndSession", &f.EndSession) && load_fn(i, "xrPollEvent", &f.PollEvent) &&
            load_fn(i, "xrCreateReferenceSpace", &f.CreateReferenceSpace) && load_fn(i, "xrCreateActionSpace", &f.CreateActionSpace) &&
@@ -152,6 +153,11 @@ bool start() {
     XrSystemProperties sp{XR_TYPE_SYSTEM_PROPERTIES};
     if (XR_SUCCEEDED(st.f.GetSystemProperties(st.instance, st.system, &sp)))
         NXLOG_I(kTag, "headset: %s (vendor 0x%x)", sp.systemName, static_cast<unsigned>(sp.vendorId));
+    XrViewConfigurationView views[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+    uint32_t view_count = 0;
+    if (XR_SUCCEEDED(st.f.EnumerateViewConfigurationViews(st.instance, st.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &view_count, views)) && view_count == 2)
+        NXLOG_I(kTag, "runtime recommends per-eye %ux%u / %ux%u pixels before lens distortion", views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight,
+                views[1].recommendedImageRectWidth, views[1].recommendedImageRectHeight);
     XrGraphicsRequirementsVulkanKHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR};
     st.f.GetVulkanGraphicsRequirementsKHR(st.instance, st.system, &req);   // must be called before xrCreateSession
     uint32_t len = 0;

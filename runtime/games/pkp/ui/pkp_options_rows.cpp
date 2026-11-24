@@ -110,9 +110,9 @@ void phone_upscaler_set(S& s, int v) {
     settings::set_int(settings::Key::SceneUpscaler, v == 3 ? 0 : v);   // the game ini, like a key row
 }
 
-constexpr int kWidths[] = {1280, 1600, 1920, 2560, 3840}, kHeights[] = {720, 900, 1080, 1440, 2160};
+constexpr int kWidths[] = {1280, 1600, 1920, 2560, 3840, 1920, 2560, 2880}, kHeights[] = {720, 900, 1080, 1440, 2160, 1920, 2560, 2880};
 constexpr int kSizeCount = static_cast<int>(std::size(kWidths));
-constexpr const char* kSizeNames[kSizeCount + 1] = {"1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "Custom"};
+constexpr const char* kSizeNames[kSizeCount + 1] = {"1280 x 720", "1600 x 900", "1920 x 1080", "2560 x 1440", "3840 x 2160", "1920 x 1920 (VR)", "2560 x 2560 (VR)", "2880 x 2880 (VR)", "Custom"};
 // [display] aspect: 0 is auto (the window's shape); read once at start (pkp_play.cpp install_render), so the row applies after a restart.
 constexpr double kAspectValues[] = {0.0, 16.0 / 9.0, 16.0 / 10.0, 21.0 / 9.0, 32.0 / 9.0};
 constexpr int kAspectCount = static_cast<int>(std::size(kAspectValues));
@@ -334,8 +334,10 @@ const Row kMouse[] = {
 };
 
 const Row kVr[] = {
+    key_row("VR HUD Size", "In-world HUD size about the centre of the view. 55% brings edge widgets into both eyes. Menus keep their normal size.", settings::Key::VrHudScale, .05, "%.0f%%", 100),
+    key_row("VR Sharpness", "Sharpens the actual headset eye images. Start at 65%; lower it if edges shimmer. Does not change render resolution.", settings::Key::VrSharpness, .05, "%.0f%%", 100, "Off"),
     key_row("VR First Person", "Right-stick click or F11 switches between first person and the normal follow-camera position.", settings::Key::VrFirstPerson),
-    key_row("VR Reading Panel", "Show dialogue and menus farther away on a raised flat panel while the game locks camera controls.", settings::Key::VrAutoReading),
+    key_row("VR Reading Panel", "On: show locked dialogue on a raised flat panel. Off: keep scripted scenes in stereo VR. Selection menus still use a readable panel.", settings::Key::VrAutoReading),
     key_row("VR Shortcuts", "Short left-stick click or F12 saves a screenshot. Right-stick click or F11 changes perspective. Hold left stick and tilt for the D-pad; both sticks open Minus.", settings::Key::VrShortcuts),
 };
 

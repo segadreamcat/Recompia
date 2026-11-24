@@ -2,6 +2,7 @@
 // Three-slot image handoff. Game queue writes private staging images; only the headset thread touches OpenXR images or its queue.
 #include "xr/xr_internal.h"
 #include <algorithm>
+#include <cmath>
 #include "nxrt/log.h"
 #include "nxrt/qpc.h"
 
@@ -155,6 +156,8 @@ void transport_frame() {
 
 void destroy_images() {
     State& st = s();
+    st.sharpener.reset();
+    st.sharpener_tried = st.sharpener_logged = false;
     for (auto& stage : st.stages) {
         for (auto& image : stage.image) destroy_stage(image);
         if (stage.pool) vkDestroyCommandPool(st.vk_device, stage.pool, nullptr);
@@ -172,7 +175,7 @@ namespace { thread_local Tag t_render_tag; }
 void render_set_tag(Tag tag) { t_render_tag = render_resolve_tag(tag); }
 Tag render_tag() { return t_render_tag; }
 
-void render_record(VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y) {
+void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y) {
     State& st = s(); const Tag tag = t_render_tag;
     if (tag.eye < 0 || tag.eye > 1 || !running()) return;
     uint64_t consumed = 0, completed = 0;
@@ -186,6 +189,12 @@ void render_record(VkCommandBuffer cb, VkImage source, VkFormat source_format, u
     const uint32_t w = crop && crop[2] > 0 ? static_cast<uint32_t>(crop[2]) : source_w;
     const uint32_t h = crop && crop[3] > 0 ? static_cast<uint32_t>(crop[3]) : source_h;
     if (!w || !h || (tag.world && (!tag.view.valid || tag.frame <= st.captured_frame))) return;
+    if (tag.world && tag.fov_ok && (st.logged_eye_w != w || st.logged_eye_h != h)) {
+        st.logged_eye_w = w; st.logged_eye_h = h;
+        const float fx = tag.fov[1] - tag.fov[0], fy = tag.fov[2] - tag.fov[3];
+        if (fx > 0.f && fy > 0.f) NXLOG_I(kTag, "eye detail: source %ux%u, headset-visible region about %.0fx%.0f pixels; rendered tangents %.3f %.3f %.3f %.3f",
+            w, h, w * (tag.view.tan_right-tag.view.tan_left)/fx, h * (tag.view.tan_up-tag.view.tan_down)/fy, tag.fov[0], tag.fov[1], tag.fov[2], tag.fov[3]);
+    }
     if (st.writing_stage >= 0) {
         Stage& previous = st.stages[st.writing_stage];
         if (!tag.world || previous.frame != tag.frame) { previous.state = ImageState::Free; st.writing_stage = -1; }
@@ -223,6 +232,26 @@ void render_record(VkCommandBuffer cb, VkImage source, VkFormat source_format, u
     vkCmdBlitImage(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
     barrier(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT);
     barrier(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    // The desktop output pass runs after this capture. Apply its existing RCAS filter here to affect actual headset pixels.
+    const float sharpness = st.sharpness.load(std::memory_order_relaxed);
+    if (tag.world && sharpness > 0.f) {
+        if (!st.sharpener_tried) {
+            st.sharpener_tried = true;
+            st.sharpener = std::make_unique<extras::Fsr1Spatial>();
+            if (!st.sharpener->init(device)) { st.sharpener.reset(); NXLOG_W(kTag, "eye sharpening unavailable; retaining the unfiltered image"); }
+        }
+        if (st.sharpener && st.sharpener->sharpen_enlarged(cb, image.image, {w, h}, {w, h}, false, 1.f, sharpness)) {
+            const VkImage filtered = st.sharpener->output_image();
+            barrier(cb, filtered, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            barrier(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+            VkImageBlit sharpened{}; sharpened.srcSubresource = sharpened.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            sharpened.srcOffsets[1] = sharpened.dstOffsets[1] = {static_cast<int32_t>(w), static_cast<int32_t>(h), 1};
+            vkCmdBlitImage(cb, filtered, VK_IMAGE_LAYOUT_GENERAL, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sharpened, VK_FILTER_NEAREST);
+            barrier(cb, filtered, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT);
+            barrier(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            if (!st.sharpener_logged) { st.sharpener_logged = true; NXLOG_I(kTag, "eye sharpening: native %ux%u, RCAS %.2f before headset transfer", w, h, sharpness); }
+        }
+    }
     st.capture_stage = slot; st.capture_eye = eye; st.capture_tag = tag;
 }
 

@@ -19,6 +19,8 @@
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
 #include "input/pkp_play.h"
+#include "ui/pkp_menu.h"
+#include "nxrt/ui_layer.h"
 #include "core/pkp_view_offset.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
@@ -36,7 +38,7 @@ constexpr uint64_t kViewFirst = 0x49b0;       // player 0's view block: root + t
 constexpr uint64_t kCameraPlayer = 0x8;       // follow camera: the player index (signed byte)
 constexpr uint64_t kEye = 0x10, kBlockBytes = 0x15c;
 // Established camera builder and lens fields from pkp_aspect.cpp; rebuild at the source, before the view handover.
-constexpr uint64_t kProjectionBuild = 0x1f12114, kProjectionFields = 0x1f12130;
+constexpr uint64_t kProjectionBuild = 0x1f12114, kProjectionFields = 0x1f12130, kCameraRebuild = 0x1f11e78;
 constexpr size_t kFov = 328;
 constexpr size_t kView = 128, kProj = 192, kViewProj = 256;
 
@@ -59,6 +61,7 @@ struct State {
     uint64_t base = 0;
     bool valid = false;
     float game[12] = {};       // original eye, look-at and up, restored together when VR stops
+    float display_aspect = 16.f / 9.f;
     float game_lens[2] = {}, written_lens[2] = {};
     float written[12] = {};    // eye, look-at, up as this hook wrote them
     float yaw_s = 0, yaw_c = 1;
@@ -68,6 +71,8 @@ struct State {
     bool logged = false;
     // one OpenXR frame's camera: both eyes from the same character position and yaw (the game moves between the two eye frames)
     std::atomic<bool> playing{false};
+    std::atomic<bool> selection_menu{false};
+    bool scene_seen = false, scripted = false, world = false;
     bool first_person = true;
     bool latched = false;
     uint64_t latched_frame = 0, reference_epoch = 0;
@@ -104,9 +109,7 @@ void note_fov_from(const float* P) {
     xr::note_rendered_fov(cx - hx, cx + hx, cy + hy, cy - hy);
 }
 
-int hook_view(::Ctx* c, uint64_t, void*) {
-    if (!guest::ok(c->x[19], kCameraPlayer + 1) || rd<int8_t>(c->x[19] + kCameraPlayer) != 0) return 0;   // split screen's other players keep the game's camera
-    const uint64_t view = c->x[20];
+int place_view(::Ctx* c, uint64_t view, bool follow) {
     if (!guest::ok(view, kBlockBytes)) return 0;
     xr::EyeView e = xr::eye_view();
     const xr::EyeView raw_eye = e;
@@ -144,7 +147,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
 
     // the left eye takes the follow camera's yaw (its horizontal forward taken to OpenXR's -Z) and the character's position; the right eye
     // of the same headset frame reuses them, so the two eyes differ only by the headset's own eye offset
-    const bool first = settings::get_bool(settings::Key::VrFirstPerson);
+    const bool first = follow && settings::get_bool(settings::Key::VrFirstPerson);
     if (first != g.first_person) { g.first_person = first; g.latched = false; g.origin_valid = false; }
     if (!g.origin_valid || e.reference_epoch != g.reference_epoch) {
         std::memcpy(g.origin, e.center, sizeof g.origin);
@@ -212,7 +215,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     // Keep the native lens aspect. Separate scene paths derive horizontal scale from the display aspect even when
     // the source camera requests another shape. A wider symmetric render FOV encloses the headset without that split;
     // the compositor receives the actual rendered FOV and maps its visible region to the headset.
-    const float aspect = g.game_lens[1];
+    const float aspect = g.display_aspect;
     const float hy = std::fmax(std::fmax(std::fabs(e.tan_down), std::fabs(e.tan_up)), hx / aspect);
     g.written_lens[0] = 2.f * std::atan(hy);
     g.written_lens[1] = aspect;
@@ -248,7 +251,18 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     return 0;
 }
 
+int hook_view(::Ctx* c, uint64_t, void*) {
+    if (!guest::ok(c->x[19], kCameraPlayer + 1) || rd<int8_t>(c->x[19] + kCameraPlayer) != 0) return 0;
+    return place_view(c, c->x[20], true);
+}
+
 int hook_proj(::Ctx* c, uint64_t, void*) {
+    // Scripted cameras use the same primary view handover. Retain their authored position and add the tracked view before renderer copies.
+    if (g.scripted && g.world && c->x[20] == view_block0() && xr::running()) {
+        place_view(c, c->x[20], false);
+        if (g.eye_in_view.load(std::memory_order_acquire) >= 0)
+            guest::call(c, g.base + kCameraRebuild, c->x[20], 1, 1, 0, 0, (c->x[31]-0x800) & ~uint64_t{15});
+    }
     if (g.eye_in_view.load(std::memory_order_acquire) < 0) return 0;
     const uint64_t cam = c->x[20];
     if (!cam || cam != view_block0() || !guest::ok(cam, kViewProj + 64)) {
@@ -287,25 +301,49 @@ int hook_projection_fields(::Ctx* c, uint64_t, void*) {
 
 // Reuse the established active-follow-camera layout from camera aim. Camera hooks can update less often than presents.
 void game_frame(::Ctx* c) {
+    if (!xr::wanted()) return;
     const uint64_t manager = guest::deref(g.base + layout::kCameraManager);
-    bool world = false;
+    bool world = false, follow = false, scene = false;
     if (guest::ok(manager, layout::kActiveCameraIndex + 1)) {
         const int8_t index = rd<int8_t>(manager + layout::kActiveCameraIndex);
-        if (index >= 0) world = guest::deref(manager + layout::kActiveCameraTable + static_cast<uint64_t>(index) * 8) == manager + layout::kFollowCamera;
+        if (index >= 0 && index < 14) {
+            const uint64_t camera = guest::deref(manager + layout::kActiveCameraTable + static_cast<uint64_t>(index) * 8);
+            scene = guest::ok(camera, 8);
+            follow = camera == manager + layout::kFollowCamera;
+        }
+        if (follow && g.playing.load(std::memory_order_relaxed)) g.scene_seen = true;
+        world = scene && g.scene_seen;
     }
     const uint64_t players = guest::deref(g.base + layout::kPlayerManager);
     const uint64_t player = guest::deref(players + layout::kManagerPlayer);
-    const bool locked = guest::ok(player, layout::kInputLock + 1) && (rd<uint8_t>(player + layout::kInputLock) & layout::kInputLockBit);
+    const uint8_t input_flags = guest::ok(player, layout::kInputLock + 1) ? rd<uint8_t>(player + layout::kInputLock) : 0;
+    const bool locked = (input_flags & layout::kInputLockBit) != 0;
+    // Native information popups pause the follow camera with bit 3; scripted scene cameras retain stereo.
+    if (follow && (input_flags & 0x08)) world = false;
+    if (g.selection_menu.load(std::memory_order_relaxed)) world = false;
     if (world && settings::get_bool(settings::Key::VrAutoReading) && (!g.playing.load(std::memory_order_relaxed) || !play_camera_free() || locked)) world = false;
-    vr_avatar::update(c, world && xr::running() && settings::get_bool(settings::Key::VrFirstPerson));
+    g.scripted = scene && !follow;
+    vr_avatar::update(c, world && follow && xr::running() && settings::get_bool(settings::Key::VrFirstPerson));
+    const bool restore = g.world && !world && g.valid;
+    g.world = world;
     xr::set_world_active(world);
+    ui_layer::set_scale(world && xr::running() ? static_cast<float>(settings::get_double(settings::Key::VrHudScale)) : 1.f);
+    if (restore && guest::ok(view_block0(), kBlockBytes)) {
+        place_view(c, view_block0(), false);
+        guest::call(c, g.base + kCameraRebuild, view_block0(), 1, 1, 0, 0, (c->x[31]-0x800) & ~uint64_t{15});
+    }
     if (!world) g.eye_in_view.store(-1, std::memory_order_relaxed);
 }
 
-void frame(bool playing, double, play::GameFrame*) { g.playing.store(playing, std::memory_order_relaxed); }
+void frame(bool playing, double, play::GameFrame*) {
+    g.playing.store(playing, std::memory_order_relaxed);
+    g.selection_menu.store(menu_has_selection(), std::memory_order_relaxed);
+}
 
 void install(const FeatureInstall& in) {
     g.base = in.base;
+    const auto display = play_display_live();
+    g.display_aspect = static_cast<float>(display.aspect > 0 ? display.aspect : static_cast<double>(display.render_w) / display.render_h);
     in.hooks.add_mid(in.base + kViewWrite, &hook_view);
     in.hooks.add_mid(in.base + kCamSubmit, &hook_proj);
     in.hooks.add_mid(in.base + kProjectionFields, &hook_projection_fields);
@@ -315,6 +353,8 @@ void install(const FeatureInstall& in) {
 
 void remove() {
     xr::set_world_active(false);
+    ui_layer::set_scale(1.f);
+    g.scene_seen = g.scripted = g.world = false;
     view_offset::set(0, 0, 0, 0);
     g.valid = false;
     g.playing.store(false, std::memory_order_relaxed);
@@ -331,6 +371,10 @@ void status_text(char* buf, size_t n) {
 }
 
 }  // namespace
+
+bool vr_camera::owns_projection(uint64_t camera) {
+    return g.valid && g.eye_in_view.load(std::memory_order_relaxed) >= 0 && camera == view_block0();
+}
 
 bool vr_camera::aim_ray(float eye[3], float direction[3]) {
     if (!xr::running()) return false;

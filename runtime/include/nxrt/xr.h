@@ -70,6 +70,8 @@ Pad pad();
 // Optional application commands from controller shortcuts, consumed by the game on its own frame thread.
 enum Command : uint32_t { kTogglePerspective = 1, kScreenshot = 2 };
 void set_shortcuts_enabled(bool enabled);
+// Contrast-adaptive sharpening of world eye images before headset handoff; 0 disables it.
+void set_sharpness(float amount);
 uint32_t take_commands();
 
 // [vr] settings the camera module reads.

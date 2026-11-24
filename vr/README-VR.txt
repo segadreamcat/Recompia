@@ -1,14 +1,17 @@
-PokopiaVR test 12
+PokopiaVR test 13
 
 Start Virtual Desktop on the Quest, connect to this PC, then start SteamVR.
 Run PlayVR.bat beside pkp.exe. The dedicated VR controls profile is controls-vr.ini.
 Start at 72 Hz in Virtual Desktop. Keep the current SteamVR OpenXR runtime for this comparison.
 
-Changes in build 12
-  Sharper 1920x1080 source rendering, 8x anisotropic filtering and chromatic aberration disabled in the dedicated VR profile.
-  First person hides the local body through its native fade component; third person and reading views restore it.
-  Conversations and menus use a raised reading panel when the game locks camera input (Camera Settings: VR Reading Panel).
-  Camera Settings also has VR First Person and VR Shortcuts switches.
+Changes in build 13
+  2560x2560 square source targets match the actual display aspect, avoiding the wide render's wasted side pixels.
+  Quest 3 visible eye region is approximately 1986x2146 pixels (build 12 was about 838x905).
+  RCAS sharpening runs on the actual headset images, before the OpenXR transfer. Desktop sharpening alone does not affect them.
+  Camera Settings: VR Sharpness starts at 65%, VR HUD Size at 55% so edge widgets fit inside both eyes.
+  VR Reading Panel is off in this profile: scripted cameras stay in stereo with tracked head movement and native camera position.
+  Selection menus and follow-camera tutorial popups still use the readable panel. Turn VR Reading Panel on to use it for locked dialogue too.
+  First-person body hiding, perspective and screenshot shortcuts are retained.
 
 Retained camera fixes
   The source camera keeps the native display aspect and uses a symmetric FOV covering the headset. The compositor receives that actual FOV.
@@ -35,9 +38,10 @@ Touch controls
   Use the headset's system recenter while facing forward.
 
 Performance
-  The installed controls-vr.ini starts at a fixed 1920x1080 source image for each alternate eye, uncapped, vsync off, temporal upscale/AA off.
-  This has 2.25 times the source pixels of build 11. SteamVR resolution alone cannot recover detail missing from the game source.
-  For more performance, change Render Resolution to 1600x900 or 1280x720 in the Display Settings tab.
+  The installed controls-vr.ini uses fixed 2560x2560 source targets, 16x anisotropic filtering, uncapped, vsync off, temporal upscale/AA off.
+  This gives over five times build 12's pixels in the headset-visible region. SteamVR resolution alone cannot recover missing game detail.
+  Display Settings includes square VR render sizes: 1920x1920 (lighter), 2560x2560 (installed), 2880x2880 (more GPU memory/work).
+  Keep Display Aspect on Auto so the render targets and all scene projections agree. Resolution changes require restarting the game.
   The game still renders alternate eyes. 144 game fps produces 72 new stereo pairs/s; a slower game reuses pairs.
   The frame pump does not create new game motion during a reused pair. The log reports both rates separately.
   Adjust the VR profile through game Settings while launched in VR.
@@ -54,11 +58,13 @@ Screenshots
   Captures contain the desktop game view, including native dialogue and HUD.
 
 Current scope
-  In-world HUD remains drawn into the eye pictures; it has no separate floating layer yet.
+  In-world HUD is inset into the eye pictures at infinity; it has no separate floating layer yet.
+  Scripted-camera support uses the primary world camera. Pre-rendered videos and full selection screens use the panel.
   Room-scale movement does not add collision to the physical head.
   Hand aiming uses the game's existing trigger-driven abilities, not physical swing/contact attacks.
   This runtime uses the current Recompia codebase. Existing VR hook points and the runtime ABI match the installed 0.16 executable;
   newer unrelated features may require an updated/rebuilt game executable.
 
 Log: pkp-vr.log beside the game.
+Portable package: merge VR-settings.ini into the matching sections of your existing pkp.ini; keep your paths.
 Rollback: use the backup folder created during installation. pkp_rt.dll.flat is still the original flat runtime.

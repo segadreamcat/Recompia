@@ -416,6 +416,8 @@ The game's own keys, in the `[pkp]` section of the game ini (`pkp.ini`; `nxrt.in
 | `pkp` | `vr_first_person` | `1` | `1` `0` | `NXRT_PKP_VR_FIRST_PERSON` | In VR, use first person; right-stick click or F11 switches to the follow-camera position. |
 | `pkp` | `vr_auto_reading` | `1` | `1` `0` | `NXRT_PKP_VR_AUTO_READING` | In VR, show conversations and menus on a raised reading panel when camera controls are locked. |
 | `pkp` | `vr_shortcuts` | `1` | `1` `0` | `NXRT_PKP_VR_SHORTCUTS` | VR shortcuts: right-stick click/F11 changes view; short left-stick click/F12 captures a screenshot. |
+| `pkp` | `vr_sharpness` | `0` | `0` to `1` (clamped into it) | `NXRT_PKP_VR_SHARPNESS` | Contrast-adaptive sharpening of the headset world image, 0 off to 1 strongest; independent of desktop upscaling. |
+| `pkp` | `vr_hud_scale` | `1` | `0.35` to `1` (clamped into it) | `NXRT_PKP_VR_HUD_SCALE` | HUD size inside VR eye images; 0.55 keeps edge widgets in the binocular visible area, 1 keeps the native layout. |
 | `pkp` | `menu_mouse` | `1` | `1` `0` | `NXRT_PKP_MENU_MOUSE` | The mouse pointer in the game's menus. Next start. |
 | `pkp` | `menu_log` | `1` | a whole number | `NXRT_PKP_MENU_LOG` | Menu logging: 0 off, 1 what the pointer does (and the sort's and search's lists), 2 more detail, 3 the layout chain once a second. Next start. |
 | `pkp` | `menu_in_game` | `1` | `1` `0` | `NXRT_PKP_MENU_IN_GAME` | The mouse pointer also works in menus opened during play. Next start. |

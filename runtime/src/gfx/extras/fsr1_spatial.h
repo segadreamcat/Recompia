@@ -34,6 +34,8 @@ public:
     // by a blit, then RCAS (linear_hdr and prescale as in upscale). Same result contract as upscale. About a quarter of EASU's cost.
     VkImageView sharpen_enlarged(VkCommandBuffer cb, VkImage src, VkExtent2D in_view, VkExtent2D out, bool linear_hdr, float prescale, float sharpness,
                                  VkExtent2D out_tex = {});
+    // Last result image, in GENERAL layout. A transfer consumer must synchronize and leave it in GENERAL.
+    VkImage output_image() const { return rcas_img_.img.image; }
     uint32_t frames() const { return frames_; }
 
     static constexpr uint32_t kSetRing = 16;

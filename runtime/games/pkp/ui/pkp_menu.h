@@ -14,6 +14,7 @@ namespace nxrt::games::pkp {
 extern const Feature kMenuFeature;
 play::Act menu_frame(bool menu_up, const play::mm::Geometry& g);   // main thread, once per frame (play_game.h GamePlay::menu_frame)
 bool menu_over_value();                                             // the pointer is over a slider: the wheel steps it
+bool menu_has_selection(); // visible selectable UI, unlike passive dialogue or notifications
 bool menu_active();                                                 // the menu hooks saw an active pointer this frame
 bool menu_in_game(bool in_game);                                    // main thread, once per frame before the context: a menu is up over play
 

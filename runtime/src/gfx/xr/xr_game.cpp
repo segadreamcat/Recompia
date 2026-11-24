@@ -63,6 +63,7 @@ EyeView hand_aim() {
     return s().running.load() ? s().cur_hands[1] : EyeView{};
 }
 void set_shortcuts_enabled(bool enabled) { s().shortcuts_enabled.store(enabled, std::memory_order_relaxed); }
+void set_sharpness(float amount) { s().sharpness.store(std::clamp(amount, 0.f, 1.f), std::memory_order_relaxed); }
 uint32_t take_commands() { return s().commands.exchange(0, std::memory_order_relaxed); }
 Pad pad() {
     State& st = s(); Pad p;

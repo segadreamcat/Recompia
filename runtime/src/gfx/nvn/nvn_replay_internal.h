@@ -294,6 +294,7 @@ struct IbShadow { VkBuffer buf = VK_NULL_HANDLE; VkDeviceSize off = 0; VkIndexTy
 // and program layout, dynamic topology and restart, the bind shadows. begin_submit resets what a new command buffer does not have.
 struct CmdState {   // owner: nvn_replay_draw.cpp (begin_draw); the other ops set dirty bits and drop the bound pipeline
     uint32_t dirty = kAllDirty;
+    float ui_scale = 1.f;
     bool mirror_stale = false;   // a GPU write made pages of a pool copy stale while a draw was being set up: bind again at the next draw
     VkPipeline bound_pipeline = VK_NULL_HANDLE;
     const ProgLayout* pl = nullptr;   // the bound program's layout (looked up on kPipe)
@@ -395,6 +396,7 @@ extern nxrt::GaugeCounter g_gauge_pipeline_binds;
 // ---- the game's 2D left out (nvn_replay_ui.cpp, nxrt/ui_layer.h) -------------------------------------------------------------------
 // After ensure_pass: true while the 2D is hidden and this draw is part of it (vertex inputs, colour target 0 a presented texture). One
 // relaxed atomic load while nothing is hidden.
+bool ui_is_draw(const ShaderInfo* vs);
 bool ui_skip_draw(const ShaderInfo* vs);
 void ui_shutdown();   // replay_shutdown: the presented textures are let go
 // ---- frame trace and debug aids (nvn_replay_trace.cpp) ---------------------------------------------------------------------------

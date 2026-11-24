@@ -37,6 +37,7 @@ void game_frame(::Ctx*) {
     if (!xr::wanted()) return;
     const bool enabled = settings::get_bool(settings::Key::VrShortcuts);
     xr::set_shortcuts_enabled(enabled);
+    xr::set_sharpness(static_cast<float>(settings::get_double(settings::Key::VrSharpness)));
     uint32_t commands = xr::take_commands();
     const bool view_key = key_state::down_by_name("F11"), shot_key = key_state::down_by_name("F12");
     if (enabled) {

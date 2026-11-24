@@ -3,6 +3,8 @@
 #pragma once
 #include "xr/xr_vk.h"
 #include <atomic>
+#include <memory>
+#include "extras/fsr1_spatial.h"
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,6 +22,7 @@ struct Fns {
     PFN_xrDestroyInstance DestroyInstance = nullptr;
     PFN_xrGetSystem GetSystem = nullptr;
     PFN_xrGetSystemProperties GetSystemProperties = nullptr;
+    PFN_xrEnumerateViewConfigurationViews EnumerateViewConfigurationViews = nullptr;
     PFN_xrCreateSession CreateSession = nullptr;
     PFN_xrDestroySession DestroySession = nullptr;
     PFN_xrBeginSession BeginSession = nullptr;
@@ -115,6 +118,10 @@ struct State {
     XrAction aim[2] = {};
     XrSpace aim_space[2] = {};
     bool actions_ready = false;
+    std::atomic<float> sharpness{0.f};
+    std::unique_ptr<extras::Fsr1Spatial> sharpener; // game render queue only
+    bool sharpener_tried = false, sharpener_logged = false;
+    uint32_t logged_eye_w = 0, logged_eye_h = 0;
     std::atomic<bool> shortcuts_enabled{true};
     std::atomic<uint32_t> commands{0};
     bool left_click_was = false, right_click_was = false, left_click_used = false, right_click_used = false;

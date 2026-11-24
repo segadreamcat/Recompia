@@ -75,6 +75,8 @@ inline constexpr Spec kSpecs[] = {
     live(b(VrFirstPerson, "vr_first_person", true, "In VR, use first person; right-stick click or F11 switches to the follow-camera position.")),
     live(b(VrAutoReading, "vr_auto_reading", true, "In VR, show conversations and menus on a raised reading panel when camera controls are locked.")),
     live(b(VrShortcuts, "vr_shortcuts", true, "VR shortcuts: right-stick click/F11 changes view; short left-stick click/F12 captures a screenshot.")),
+    live(d(VrSharpness, "vr_sharpness", 0.0, 0.0, 1.0, "Contrast-adaptive sharpening of the headset world image, 0 off to 1 strongest; independent of desktop upscaling.")),
+    live(d(VrHudScale, "vr_hud_scale", 1.0, 0.35, 1.0, "HUD size inside VR eye images; 0.55 keeps edge widgets in the binocular visible area, 1 keeps the native layout.")),
     b(MenuMouse, "menu_mouse", true, "The mouse pointer in the game's menus."),
     i(MenuLog, "menu_log", 1, 0, 0, "Menu logging: 0 off, 1 what the pointer does (and the sort's and search's lists), 2 more detail, 3 the layout chain once a second."),
     b(MenuInGame, "menu_in_game", true, "The mouse pointer also works in menus opened during play."),
