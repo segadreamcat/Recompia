@@ -76,6 +76,7 @@ if(TARGET nxrt_gfx)
         "${_pkp}/render/pkp_quality.cpp"
         "${_pkp}/render/pkp_taa.cpp"
         "${_pkp}/render/pkp_shoulder_camera.cpp"
+        "${_pkp}/render/pkp_vr_camera.cpp"
         "${_pkp}/render/pkp_view_projection.cpp"
         # input
         "${_pkp}/input/pkp_play.cpp"

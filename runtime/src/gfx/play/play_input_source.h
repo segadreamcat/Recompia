@@ -3,12 +3,14 @@
 #pragma once
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
 
 #include "nxrt/frame_limiter.h"
 #include "nxrt/input_source.h"
+#include "nxrt/xr.h"
 #include "pad_orient.h"
 #include "play_engine.h"
 
@@ -45,6 +47,12 @@ public:
         n.buttons = pf.buttons | kb.buttons;
         n.left = combine(pf.left, kb.lx, kb.ly);
         n.right = combine(pf.right, kb.rx, kb.ry);
+        if (const xr::Pad xp = xr::pad(); xp.active) {   // PokopiaVR: the headset's controllers, on top of the pad and the keyboard
+            n.buttons |= xp.buttons;
+            auto mag = [](int32_t x, int32_t y) { return std::abs(x) + std::abs(y); };
+            if (mag(xp.lx, xp.ly) > mag(n.left.x, n.left.y)) n.left = hid::StickValue{xp.lx, xp.ly};
+            if (mag(xp.rx, xp.ry) > mag(n.right.x, n.right.y)) n.right = hid::StickValue{xp.rx, xp.ry};
+        }
         n.six_axis = pf.six;
         {   // the pad's orientation (the game's pointer scheme reads it): integrated from the gyro, held level by the accelerometer
             const uint64_t t = FrameLimiter::now_ns();

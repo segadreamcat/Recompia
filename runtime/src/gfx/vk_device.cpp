@@ -16,6 +16,7 @@
 #include <tuple>
 
 #include "nxrt/config.h"
+#include "xr/xr_vk.h"
 #include "nxrt/gauge.h"
 #include "nxrt/memguard.h"
 #include "nxrt/gfx.h"
@@ -425,6 +426,8 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         const char* const* pe = platform::vulkan_instance_extensions(&cnt);
         for (uint32_t i = 0; pe && i < cnt; ++i) inst_exts.push_back(pe[i]);
     }
+    xr::vk_instance_extensions(inst_exts);   // PokopiaVR: [vr] enabled starts OpenXR and adds what it needs
+
     // macOS: MoltenVK is a portability (non-conformant) driver. A portability implementation lists no device unless the instance asks
     // for portability devices, and it keeps VK_KHR_portability_subset off the device until this is set. KosmicKrisp is conformant and
     // is listed either way; without the flag a Vulkan Loader (the LunarG SDK, the loader bundled in the app) hides MoltenVK entirely.
@@ -595,7 +598,11 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         want = it != usable_to_all.end() ? std::to_string(it - usable_to_all.begin()) : std::string("\x01no-such-gpu");
     }
     bool matched = true;
-    const size_t pick = usable_to_all[pick_gpu(usable, want.c_str(), &matched)];
+    size_t pick = usable_to_all[pick_gpu(usable, want.c_str(), &matched)];
+    if (VkPhysicalDevice xr_pd = xr::vk_wanted_physical(instance_)) {   // PokopiaVR: the GPU the headset is on
+        for (size_t i : usable_to_all)
+            if (cands[i].pd == xr_pd) { pick = i; break; }
+    }
     gpu_override_matched_ = matched;
     if (!matched) NXLOG_W(kTag, "gpu override '%s' matches no usable GPU: using the default", gpu_want.c_str());
     gpu_index_ = pick;
@@ -803,6 +810,15 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         limits_.max_memory_allocation_count = props_.limits.maxMemoryAllocationCount;
     }
     if (!headless) dev_exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    {   // PokopiaVR: the device extensions OpenXR asks for, those this GPU offers
+        std::vector<const char*> xr_exts;
+        xr::vk_device_extensions(xr_exts);
+        for (const char* e : xr_exts) {
+            bool listed = false;
+            for (const char* d : dev_exts) listed = listed || !std::strcmp(d, e);
+            if (!listed && has_dext(e)) dev_exts.push_back(e);
+        }
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci.queueFamilyIndex = queue_family_;
@@ -817,6 +833,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed (" + std::to_string(r) + ")");
     volkLoadDevice(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+    xr::vk_device_created(instance_, physical_, device_, queue_family_, 0);   // PokopiaVR: the OpenXR session on this queue
 
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);

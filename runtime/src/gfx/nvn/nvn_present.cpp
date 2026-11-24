@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nxrt/color_matrix.h"
+#include "xr/xr_vk.h"
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
 #include "nxrt/extras.h"
@@ -67,6 +68,8 @@ void present_on_render_thread(Window* w, int index, bool again) {
     nxrt::HitchTimer ht_present(nxrt::kHpRenderPresent);
     ft::SplitScope sp_present(ft::kSplPresent);
     CaptureEnd capture_end;
+    // PokopiaVR: after the present's submission (or an early return) the eye's swapchain image goes back and a right eye ends the frame
+    struct XrDone { ~XrDone() { xr::render_after_submit(); } } xr_done;
     gfx::Renderer* rend = renderer();
     PresentPass* pp = present_pass();
     if (!w || index < 0 || static_cast<size_t>(index) >= w->textures.size()) return;
@@ -128,6 +131,9 @@ void present_on_render_thread(Window* w, int index, bool again) {
         tu.present_out_w.store(static_cast<int>(fi.extent.width), std::memory_order_relaxed);
         tu.present_out_h.store(static_cast<int>(fi.extent.height), std::memory_order_relaxed);
     }
+    if (!again)   // PokopiaVR: the picture into the headset eye this frame rendered (nothing when the frame is not a VR one)
+        xr::render_record(f.cb, tex_image(t), tex_vk_format(t), e.width, e.height, crop,
+                          window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);
     pp->set_flip_y(window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);   // the game runs with the lower-left origin (mode 0)
     // HDR scene / HDR swapchain / FSR 1 or NIS / picture controls / a colour matrix go through the output pass (S14); everything else is the
     // plain present pass of the SDR path
