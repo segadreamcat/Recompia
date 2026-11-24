@@ -14,7 +14,8 @@
 // Configuration ([vr], read once):
 //   enabled = 0          1: start an OpenXR session
 //   world_scale = 100    game world units per metre of head movement (a block is 100 units)
-//   head_height = 60     world units from the follow camera's look-at point (the character) up to the eyes
+//   head_height = 120    world units from the follow camera's look-at point (the character) up to the eyes
+//   frame_lag = 1        presents between a frame's camera and the present that shows it (the engine draws one frame behind)
 //   mirror_x = 0         1: mirror the headset's left and right (if the eyes come out swapped: the game's world turns out left-handed)
 //   panel_distance = 2.5 metres to the flat panel that shows the title and menus (outside the world)
 //   panel_width = 3.2    its width in metres
@@ -52,6 +53,8 @@ struct Tag {
     float fov[4] = {};
 };
 Tag game_present();
+// The game thread, after the present has been queued: waits for the next OpenXR frame when one is due (after a right eye).
+void game_present_done();
 // The game thread: the camera module placed this frame's eye (the frame shows the world in stereo, not a menu).
 void note_world_view();
 // The game thread: the field of view this frame's picture was rendered with, read back from the projection (tangents, left and down

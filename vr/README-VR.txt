@@ -21,7 +21,7 @@ Controls (Touch)
 
 Tweaks (pkp.ini, add a [vr] section)
   world_scale = 100   bigger = you feel smaller
-  head_height = 60    eye height above the character
+  head_height = 120   eye height above the character
   mirror_x = 1        only if left and right eyes look swapped
 
 Known in this build
