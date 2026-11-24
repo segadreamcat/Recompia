@@ -1,30 +1,42 @@
-PokopiaVR (test build 1) for Recompia 0.16.0
+PokopiaVR test 8
 
-Install
-  1. Back up pkp_rt.dll in your Recompia-0.16.0 folder.
-  2. Copy pkp_rt.dll, openxr_loader.dll and PlayVR.bat into that folder.
-  No Set up again needed.
+Start Virtual Desktop on the Quest, connect to this PC, then start SteamVR.
+Run PlayVR.bat beside pkp.exe. The dedicated VR controls profile is controls-vr.ini.
+Start at 72 Hz in Virtual Desktop. Keep the current SteamVR OpenXR runtime for this comparison.
 
-Play
-  1. Start SteamVR (or Virtual Desktop with VDXR).
-  2. Run PlayVR.bat. Normal Play / Play.bat still runs flat.
-  3. Keep Settings > Gameplay > Shoulder camera at 0 / 0.
-  4. Uncap the frame rate (F1 > Display: fps limit off, vsync off).
-     The game draws one eye per frame, so it needs 2x your headset rate (144 fps for 72 Hz).
+Changes
+  Independent headset frame pump; the last complete stereo pair is reprojected during a slow game frame.
+  Each eye retains its actual render pose; queued frames cannot overwrite tracking metadata.
+  Vulkan commands are submitted before OpenXR receives the eye image.
+  Brief missing camera updates keep the world in stereo instead of switching to a flat panel.
+  First person is anchored to the player's position, with headset movement relative to the initial head centre.
+  Right-controller tracking aims abilities; head aim is the fallback when controller tracking is unavailable.
+  Title and non-world menus use a world-locked panel placed in front of the current head position.
 
-Controls (Touch)
-  Left stick     move            Right stick    turn (smooth)
-  A / B / X / Y  A / B / X / Y   Triggers       ZL / ZR
-  Grips          L / R           Left menu      +
-  Left stick click  -            Right stick click  right stick press
-  Recenter with the headset's own recenter (hold the Oculus / system button).
+Touch controls
+  Left stick: move. Right stick: smooth turn / menu navigation.
+  A/B/X/Y, triggers ZL/ZR, grips L/R, left menu: +.
+  Hold left stick click and tilt it for the D-pad.
+  Press both sticks together for -; right stick click alone is right stick press.
+  Use the headset's system recenter while facing forward.
 
-Tweaks (pkp.ini, add a [vr] section)
-  world_scale = 100   bigger = you feel smaller
-  head_height = 120   eye height above the character
-  mirror_x = 1        only if left and right eyes look swapped
+Performance
+  The installed controls-vr.ini starts at a fixed 1280x720 per eye, uncapped, vsync off, temporal upscale/AA off.
+  The game still renders alternate eyes. 144 game fps produces 72 new stereo pairs/s; a slower game reuses pairs.
+  The frame pump does not create new game motion during a reused pair. The log reports both rates separately.
+  Adjust the VR profile through game Settings while launched in VR.
 
-Known in this build
-  HUD and menus are stuck to your face (same picture in both eyes).
-  Your own character model can block the view.
-  Aiming follows the turn direction, not your hand yet.
+Existing [vr] keys in pkp.ini
+  world_scale = 100, head_height = 120, frame_lag = 1, mirror_x = 0
+  panel_distance = 2.5, panel_width = 3.2
+  Keep mirror_x at 0; it is not an eye-swap correction.
+
+Current scope
+  In-world HUD remains drawn into the eye pictures; it has no separate floating layer yet.
+  The local character mesh is not hidden. Room-scale movement does not add collision to the physical head.
+  Hand aiming uses the game's existing trigger-driven abilities, not physical swing/contact attacks.
+  This runtime uses the current Recompia codebase. Existing VR hook points and the runtime ABI match the installed 0.16 executable;
+  newer unrelated features may require an updated/rebuilt game executable.
+
+Log: pkp-vr.log beside the game.
+Rollback: use the backup folder created during installation. pkp_rt.dll.flat is still the original flat runtime.

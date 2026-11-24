@@ -852,7 +852,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed (" + std::to_string(r) + ")");
     volkLoadDevice(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
-    xr::vk_device_created(instance_, physical_, device_, queue_family_, 0);   // PokopiaVR: the OpenXR session on this queue
+    xr::vk_device_created(instance_, physical_, device_, queue_family_, 0, &queue_mutex_);   // PokopiaVR: the OpenXR session on this queue
 
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);
@@ -924,6 +924,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
 }
 
 Device::~Device() {
+    xr::vk_shutdown(device_);
     if (device_ && !device_lost()) vkDeviceWaitIdle(device_);
     if (impl_) {
         if (impl_->once_fence) { vkDestroyFence(device_, impl_->once_fence, nullptr); vk_gauge_fences().sub(1); }

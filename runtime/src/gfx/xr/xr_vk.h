@@ -5,6 +5,7 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 #include "nxrt/xr.h"
@@ -18,15 +19,17 @@ VkPhysicalDevice vk_wanted_physical(VkInstance instance);
 // Before vkCreateDevice: the device extensions the runtime asks for (only names the device offers are added by the caller's check).
 void vk_device_extensions(std::vector<const char*>& exts);
 // After vkCreateDevice: creates the session on this device and queue.
-void vk_device_created(VkInstance instance, VkPhysicalDevice physical, VkDevice device, uint32_t queue_family, uint32_t queue_index);
+void vk_device_created(VkInstance instance, VkPhysicalDevice physical, VkDevice device, uint32_t queue_family, uint32_t queue_index, std::mutex* queue_mutex);
 
-// The render thread. The present path sets the tag of the present it runs (present_on_render_thread reads it back).
+// Before Vulkan device destruction: stop the frame pump and destroy OpenXR graphics resources.
+void vk_shutdown(VkDevice device);
+// Render-thread metadata travels with each present.
 void render_set_tag(Tag t);
 Tag render_tag();
 // Records the copy of the presented picture (src, in SHADER_READ_ONLY_OPTIMAL, left in that layout) into the tagged eye's swapchain.
 // crop: x, y, w, h in texels (w or h 0: the whole image). flip_y: the picture is stored bottom-up.
 void render_record(VkCommandBuffer cb, VkImage src, VkFormat src_format, uint32_t src_w, uint32_t src_h, const int32_t crop[4], bool flip_y);
-// After the present's submission: releases the swapchain image and, after the right eye, ends the OpenXR frame.
+// After the Vulkan submit worker has drained: release images and publish only complete stereo pairs.
 void render_after_submit();
 
 }  // namespace nxrt::xr

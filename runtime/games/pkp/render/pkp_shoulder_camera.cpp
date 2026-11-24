@@ -38,6 +38,7 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/qpc.h"
+#include "nxrt/xr.h"
 
 namespace nxrt::games::pkp {
 namespace {
@@ -121,7 +122,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     const uint64_t view = c->x[20];
     Slot& s = g.slots[player];
     const float side = g.side.load(std::memory_order_relaxed), height = g.height.load(std::memory_order_relaxed);
-    if (side == 0.f && height == 0.f) {
+    if (xr::running() || (side == 0.f && height == 0.f)) {
         if (s.valid && guest::ok(view, kViewBytes)) release(s, view);
         view_offset::set(player, 0, 0, 0);
         return 0;

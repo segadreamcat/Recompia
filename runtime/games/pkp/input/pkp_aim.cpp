@@ -68,6 +68,7 @@
 #include "input/pkp_aim.h"
 #include "input/pkp_aim_debug.h"
 #include "core/pkp_guest.h"
+#include "render/pkp_vr_camera.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
 #include "core/pkp_view_offset.h"
@@ -171,6 +172,8 @@ uint64_t follow_camera(uint64_t ch) {
 // The follow camera cam's view now. The crosshair is the view's centre: with the over-the-shoulder camera (pkp_view_offset.h) the view is
 // moved off the follow camera's eye and look-at by an offset, so the ray starts there and runs parallel (zero offset: the camera's own eye).
 View live_view(uint64_t cam) {
+    View tracked;
+    if (vr_camera::aim_ray(tracked.eye, tracked.dir)) return tracked;
     const view_offset::Offset vo = view_offset::get(0);   // the follow camera is the first player's
     const float fx = rd<float>(cam + kEye), fy = rd<float>(cam + kEye + 4), fz = rd<float>(cam + kEye + 8);
     View v;

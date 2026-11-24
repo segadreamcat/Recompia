@@ -3,7 +3,7 @@
 //
 // Two hooks, both on sites the game build already has (no Set up again):
 //   view   0x7100088e04 (pkp_shoulder_camera.cpp has the details): the follow camera's view block (x20) right before its view matrix is
-//          built from eye, look-at and up. Player 0's eye goes to the character (the follow camera's look-at plus [vr] head_height) plus the
+//          built from eye, look-at and up. Player 0's eye goes to the character (the player's position plus [vr] head_height) plus the
 //          headset eye's offset, turned by the follow camera's yaw (the right stick still turns, Skyrim style: the head only looks around).
 //          Look-at and up come from the headset's orientation, so pitch and roll are the head's own.
 //   proj   0x71008cc124 (pkp_aspect.cpp): a camera's view-projection is handed to the renderer (x20 = the camera). For player 0's view block
@@ -17,8 +17,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include "core/pkp_guest.h"
+#include "core/pkp_layout.h"
 #include "core/pkp_view_offset.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
@@ -55,7 +57,7 @@ V3 yaw(V3 v, float sn, float cs) { return {cs * v.x + sn * v.z, v.y, -sn * v.x +
 struct State {
     uint64_t base = 0;
     bool valid = false;
-    float game[8] = {};        // eye and look-at (vec4 each) as the game wrote them
+    float game[12] = {};       // original eye, look-at and up, restored together when VR stops
     float written[12] = {};    // eye, look-at, up as this hook wrote them
     float yaw_s = 0, yaw_c = 1;
     std::atomic<int> eye_in_view{-1};   // the eye the view block holds (the projection hook uses the same eye's field of view)
@@ -65,6 +67,13 @@ struct State {
     bool logged = false;
     // one OpenXR frame's camera: both eyes from the same character position and yaw (the game moves between the two eye frames)
     bool latched = false;
+    uint64_t latched_frame = 0, reference_epoch = 0;
+    bool origin_valid = false;
+    float origin[3] = {};
+    std::mutex aim_mutex;
+    bool aim_valid = false;
+    V3 aim_eye, aim_dir;
+    uint64_t aim_ns = 0;
     V3 anchor;
     float game_eye[3] = {};
     uint64_t diag_ns = 0;
@@ -91,7 +100,7 @@ void note_fov_from(const float* P) {
 }
 
 int hook_view(::Ctx* c, uint64_t, void*) {
-    if (rd<int8_t>(c->x[19] + kCameraPlayer) != 0) return 0;   // split screen's other players keep the game's camera
+    if (!guest::ok(c->x[19], kCameraPlayer + 1) || rd<int8_t>(c->x[19] + kCameraPlayer) != 0) return 0;   // split screen's other players keep the game's camera
     const uint64_t view = c->x[20];
     if (!guest::ok(view, kBlockBytes)) return 0;
     xr::EyeView e = xr::eye_view();
@@ -110,6 +119,8 @@ int hook_view(::Ctx* c, uint64_t, void*) {
         }
         g.eye_in_view.store(-1, std::memory_order_relaxed);
         g.latched = false;
+        g.origin_valid = false;
+        { std::lock_guard<std::mutex> lk(g.aim_mutex); g.aim_valid = false; }
         view_offset::set(0, 0, 0, 0);
         return 0;
     }
@@ -122,7 +133,13 @@ int hook_view(::Ctx* c, uint64_t, void*) {
 
     // the left eye takes the follow camera's yaw (its horizontal forward taken to OpenXR's -Z) and the character's position; the right eye
     // of the same headset frame reuses them, so the two eyes differ only by the headset's own eye offset
-    if (e.eye == 0 || !g.latched) {
+    if (!g.origin_valid || e.reference_epoch != g.reference_epoch) {
+        std::memcpy(g.origin, e.center, sizeof g.origin);
+        g.reference_epoch = e.reference_epoch;
+        g.origin_valid = true;
+        g.latched = false;
+    }
+    if (!g.latched || e.frame != g.latched_frame) {
         const float fx = g.game[4] - g.game[0], fz = g.game[6] - g.game[2];
         const float fl = std::sqrt(fx * fx + fz * fz);
         if (fl > 1e-3f) {
@@ -130,16 +147,40 @@ int hook_view(::Ctx* c, uint64_t, void*) {
             g.yaw_s = -fx / fl;
             g.yaw_c = -fz / fl;
         }
-        g.anchor = V3{g.game[4], g.game[5] + xr::head_height(), g.game[6]};
+        // The follow look-at is an animated focus point, including camera collision and scripted offsets. Anchor to the
+        // character's established virtual position getter instead; its override also handles the save-data position mode.
+        const uint64_t manager = guest::deref(g.base + layout::kPlayerManager);
+        const uint64_t player = guest::deref(manager + layout::kManagerPlayer);
+        const uint64_t vtable = guest::deref(player);
+        const uint64_t getter = guest::deref(vtable + 2 * sizeof(uint64_t));
+        if (!getter || !guest::ok(getter, 4)) return 0;
+        const uint64_t pos = guest::call(c, getter, player, 0, 0, 0, 0, (c->x[31] - 0x400) & ~uint64_t{15});
+        float point[3];
+        if (!guest::read(pos, point, sizeof point)) return 0;
+        for (float value : point) if (!std::isfinite(value)) return 0;
+        g.anchor = V3{point[0], point[1] + xr::head_height(), point[2]};
+        g.latched_frame = e.frame;
         g.game_eye[0] = g.game[0], g.game_eye[1] = g.game[1], g.game_eye[2] = g.game[2];
         g.latched = true;
     }
     const float s = xr::world_scale();
     const V3 anchor = g.anchor;
-    const V3 eye = add(anchor, yaw(scale(V3{e.pos[0], e.pos[1], e.pos[2]}, s), g.yaw_s, g.yaw_c));
+    const V3 eye = add(anchor, yaw(scale(V3{e.pos[0] - g.origin[0], e.pos[1] - g.origin[1], e.pos[2] - g.origin[2]}, s), g.yaw_s, g.yaw_c));
     const V3 fwd = yaw(rotate(e.quat, V3{0, 0, -1}), g.yaw_s, g.yaw_c);
     const V3 up = yaw(rotate(e.quat, V3{0, 1, 0}), g.yaw_s, g.yaw_c);
     const V3 look = add(eye, scale(fwd, 100.f));
+    const xr::EyeView hand = xr::hand_aim();
+    V3 aim_eye = add(anchor, yaw(scale(V3{e.center[0] - g.origin[0], e.center[1] - g.origin[1], e.center[2] - g.origin[2]}, s), g.yaw_s, g.yaw_c));
+    V3 aim_dir = fwd;
+    if (hand.valid) {
+        aim_eye = add(anchor, yaw(scale(V3{hand.pos[0] - g.origin[0], hand.pos[1] - g.origin[1], hand.pos[2] - g.origin[2]}, s), g.yaw_s, g.yaw_c));
+        aim_dir = yaw(rotate(hand.quat, V3{0, 0, -1}), g.yaw_s, g.yaw_c);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g.aim_mutex);
+        g.aim_eye = aim_eye; g.aim_dir = aim_dir; g.aim_ns = qpc::now_ns(); g.aim_valid = true;
+    }
+
 
     float out[12];
     std::memcpy(out, cur, sizeof out);   // keeps each vec4's w
@@ -226,6 +267,8 @@ void install(const FeatureInstall& in) {
 void remove() {
     view_offset::set(0, 0, 0, 0);
     g.valid = false;
+    g.latched = g.origin_valid = false;
+    { std::lock_guard<std::mutex> lk(g.aim_mutex); g.aim_valid = false; }
     g.eye_in_view.store(-1);
     g.placed.store(0), g.projected.store(0);
     g.logged = false;
@@ -237,6 +280,15 @@ void status_text(char* buf, size_t n) {
 }
 
 }  // namespace
+
+bool vr_camera::aim_ray(float eye[3], float direction[3]) {
+    if (!xr::running()) return false;
+    std::lock_guard<std::mutex> lk(g.aim_mutex);
+    if (!g.aim_valid || qpc::now_ns() - g.aim_ns > 250000000ull) return false;
+    eye[0] = g.aim_eye.x; eye[1] = g.aim_eye.y; eye[2] = g.aim_eye.z;
+    direction[0] = g.aim_dir.x; direction[1] = g.aim_dir.y; direction[2] = g.aim_dir.z;
+    return true;
+}
 
 const Feature kVrCameraFeature = {.name = "vr_camera", .install = &install, .remove = &remove, .status_text = &status_text};
 

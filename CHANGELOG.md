@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VR: independent headset frame submission, complete stereo-pair handoff, player-position first person, and tracked controller aiming.
+
 **Update:** press **Update** in the launcher. **Set up again** is not needed (saves and shaders are kept, no shader is translated again).
 
 ### Launcher

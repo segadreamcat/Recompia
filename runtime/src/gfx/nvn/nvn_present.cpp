@@ -69,7 +69,11 @@ void present_on_render_thread(Window* w, int index, bool again) {
     ft::SplitScope sp_present(ft::kSplPresent);
     CaptureEnd capture_end;
     // PokopiaVR: after the present's submission (or an early return) the eye's swapchain image goes back and a right eye ends the frame
-    struct XrDone { ~XrDone() { xr::render_after_submit(); } } xr_done;
+    struct XrDone { ~XrDone() {
+        // end_frame may only enqueue a submit-worker job. OpenXR must not receive the image until vkQueueSubmit has run.
+        if (xr::render_tag().eye >= 0) submit_drain();
+        xr::render_after_submit();
+    } } xr_done;
     gfx::Renderer* rend = renderer();
     PresentPass* pp = present_pass();
     if (!w || index < 0 || static_cast<size_t>(index) >= w->textures.size()) return;

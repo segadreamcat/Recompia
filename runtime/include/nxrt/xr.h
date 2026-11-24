@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PokopiaVR: OpenXR head-mounted display output, the game-facing half (no Vulkan types here; the graphics half is src/gfx/xr/xr_vk.h).
 //
-// Stereo is alternate-eye rendering (AER): the game renders the left eye in one frame and the right eye in the next, each from that eye's
-// pose, and the two presents of one OpenXR frame are handed to the compositor together. The game therefore runs at twice the headset's rate
-// (144 game frames for a 72 Hz headset). One OpenXR frame:
-//   game thread   present boundary of the right eye (or the first one): xrWaitFrame, xrSyncActions, xrLocateViews -> the views of the frame
-//   game thread   left-eye frame: the camera module asks eye_view(); the present boundary tags that present (eye 0)
-//   game thread   right-eye frame: the same with eye 1
-//   render thread the two tagged presents: xrBeginFrame on eye 0, the picture copied into each eye's swapchain, xrEndFrame after eye 1
-// Everything is off unless [vr] enabled = 1 and an OpenXR runtime (SteamVR, Virtual Desktop's VDXR, Oculus) answers; then the game runs as
-// before on the monitor only.
+// The game renders alternate eyes. A dedicated headset frame loop submits the latest complete pair at the headset's cadence,
+// retaining the exact pose used to render each image. Neither game nor render thread waits for xrWaitFrame. Images are handed
+// back to OpenXR only after their graphics commands have actually been submitted to Vulkan.
 //
 // Configuration ([vr], read once):
 //   enabled = 0          1: start an OpenXR session
 //   world_scale = 100    game world units per metre of head movement (a block is 100 units)
-//   head_height = 120    world units from the follow camera's look-at point (the character) up to the eyes
+//   head_height = 120    world units above the player's position
 //   frame_lag = 1        presents between a frame's camera and the present that shows it (the engine draws one frame behind)
 //   mirror_x = 0         1: mirror the headset's left and right (if the eyes come out swapped: the game's world turns out left-handed)
 //   panel_distance = 2.5 metres to the flat panel that shows the title and menus (outside the world)
@@ -35,6 +29,8 @@ bool running();
 // One eye of the OpenXR frame in progress, in the LOCAL reference space (metres; +Y up, -Z forward; recentred by the headset's own recenter).
 struct EyeView {
     bool valid = false;
+    uint64_t frame = 0, reference_epoch = 0;
+    float center[3] = {};
     int eye = -1;                       // 0 left, 1 right
     float pos[3] = {};
     float quat[4] = {0, 0, 0, 1};       // x, y, z, w
@@ -42,18 +38,21 @@ struct EyeView {
 };
 // The game thread: the eye this game frame renders. Invalid while the session is not running.
 EyeView eye_view();
+// Right controller aim pose from the same tracking snapshot; invalid when tracking is unavailable.
+EyeView hand_aim();
 
 // The game thread, at the game's present (the frame boundary): tags the frame just finished with the eye it rendered and moves on to the
-// next eye, waiting for the next OpenXR frame after a right eye. Returns the tag the render thread hands to the graphics half.
+// next eye. Returns a complete camera snapshot that travels with the present to the graphics half.
 struct Tag {
     int eye = -1;                       // -1: not a VR frame
-    uint64_t frame = 0;                 // the OpenXR frame (1, 2, ...)
+    uint64_t frame = 0;                 // the rendered camera pair (1, 2, ...)
+    EyeView view;                       // exact raw reference-space pose used by this image
     bool world = false;                 // the camera module placed this eye in the world (else: a menu or the title, shown on a flat panel)
     bool fov_ok = false;                // fov holds the field of view the picture was really rendered with (tangents: left, right, up, down)
     float fov[4] = {};
 };
 Tag game_present();
-// The game thread, after the present has been queued: waits for the next OpenXR frame when one is due (after a right eye).
+// The game thread, after the present is queued: snapshots the next pair's tracking after a right eye; never waits for the headset.
 void game_present_done();
 // The game thread: the camera module placed this frame's eye (the frame shows the world in stereo, not a menu).
 void note_world_view();
