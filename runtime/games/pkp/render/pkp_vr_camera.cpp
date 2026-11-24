@@ -22,6 +22,7 @@
 #include "core/pkp_view_offset.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
+#include "nxrt/qpc.h"
 #include "nxrt/xr.h"
 
 namespace nxrt::games::pkp {
@@ -59,8 +60,15 @@ struct State {
     float yaw_s = 0, yaw_c = 1;
     std::atomic<int> eye_in_view{-1};   // the eye the view block holds (the projection hook uses the same eye's field of view)
     xr::EyeView eye;                    // that eye (game thread only)
-    std::atomic<uint64_t> placed{0}, projected{0};
+    std::atomic<uint64_t> placed{0}, projected{0}, other_cams{0};
+    std::atomic<uint64_t> last_other{0};
     bool logged = false;
+    // one OpenXR frame's camera: both eyes from the same character position and yaw (the game moves between the two eye frames)
+    bool latched = false;
+    V3 anchor;
+    float game_eye[3] = {};
+    uint64_t diag_ns = 0;
+    float diag_p[6] = {};
 };
 State g;
 
@@ -70,6 +78,16 @@ uint64_t view_block0() {
     const uint64_t got = rd<uint64_t>(g.base + kViewRoot);
     const uint64_t root = guest::ok(got, 8) ? rd<uint64_t>(got) : 0;
     return root ? root + kViewFirst : 0;
+}
+
+// The tangents a row-vector projection (clip = p * P) covers, handed to the compositor (nxrt/xr.h note_rendered_fov).
+void note_fov_from(const float* P) {
+    const float sx = P[0], sy = P[5], p23 = P[11];
+    if (!(std::fabs(sx) > 1e-4f) || !(std::fabs(sy) > 1e-4f) || !(std::fabs(p23) > 0.5f)) return;
+    const float cx = -P[8] / (sx * p23), cy = -P[9] / (sy * p23);
+    const float hx = 1.f / std::fabs(sx), hy = 1.f / std::fabs(sy);
+    if (!std::isfinite(cx) || !std::isfinite(cy)) return;
+    xr::note_rendered_fov(cx - hx, cx + hx, cy + hy, cy - hy);
 }
 
 int hook_view(::Ctx* c, uint64_t, void*) {
@@ -91,6 +109,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
             g.valid = false;
         }
         g.eye_in_view.store(-1, std::memory_order_relaxed);
+        g.latched = false;
         view_offset::set(0, 0, 0, 0);
         return 0;
     }
@@ -101,16 +120,22 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     for (float f : g.game)
         if (!std::isfinite(f)) return 0;
 
-    // the follow camera's yaw: its horizontal forward taken to OpenXR's -Z
-    const float fx = g.game[4] - g.game[0], fz = g.game[6] - g.game[2];
-    const float fl = std::sqrt(fx * fx + fz * fz);
-    if (fl > 1e-3f) {
-        // yaw(0, 0, -1) = (-sin, 0, -cos) must equal (fx, fz) / fl
-        g.yaw_s = -fx / fl;
-        g.yaw_c = -fz / fl;
+    // the left eye takes the follow camera's yaw (its horizontal forward taken to OpenXR's -Z) and the character's position; the right eye
+    // of the same headset frame reuses them, so the two eyes differ only by the headset's own eye offset
+    if (e.eye == 0 || !g.latched) {
+        const float fx = g.game[4] - g.game[0], fz = g.game[6] - g.game[2];
+        const float fl = std::sqrt(fx * fx + fz * fz);
+        if (fl > 1e-3f) {
+            // yaw(0, 0, -1) = (-sin, 0, -cos) must equal (fx, fz) / fl
+            g.yaw_s = -fx / fl;
+            g.yaw_c = -fz / fl;
+        }
+        g.anchor = V3{g.game[4], g.game[5] + xr::head_height(), g.game[6]};
+        g.game_eye[0] = g.game[0], g.game_eye[1] = g.game[1], g.game_eye[2] = g.game[2];
+        g.latched = true;
     }
     const float s = xr::world_scale();
-    const V3 anchor{g.game[4], g.game[5] + xr::head_height(), g.game[6]};
+    const V3 anchor = g.anchor;
     const V3 eye = add(anchor, yaw(scale(V3{e.pos[0], e.pos[1], e.pos[2]}, s), g.yaw_s, g.yaw_c));
     const V3 fwd = yaw(rotate(e.quat, V3{0, 0, -1}), g.yaw_s, g.yaw_c);
     const V3 up = yaw(rotate(e.quat, V3{0, 1, 0}), g.yaw_s, g.yaw_c);
@@ -129,6 +154,21 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     xr::note_world_view();
     // camera aim casts its ray from the follow camera's eye plus this offset (pkp_view_offset.h)
     view_offset::set(0, eye.x - g.game[0], eye.y - g.game[1], eye.z - g.game[2]);
+    {   // the field of view the picture gets, as far as known now (the projection hook refines it): last frame's projection of this view
+        const float* P = reinterpret_cast<const float*>(view + 0xc0);
+        note_fov_from(P);
+    }
+    const uint64_t now = qpc::now_ns();
+    if (now - g.diag_ns > 3000000000ull) {
+        g.diag_ns = now;
+        NXLOG_I(kTag, "diag: placed %llu, projected %llu, other cameras %llu (last 0x%llx, view 0x%llx, block0 0x%llx); P before: %.3f %.3f %.3f %.3f %.3f %.3f; "
+                "eye %d tan L %.3f R %.3f U %.3f D %.3f; game eye (%.0f %.0f %.0f) look (%.0f %.0f %.0f)",
+                static_cast<unsigned long long>(g.placed.load()), static_cast<unsigned long long>(g.projected.load()),
+                static_cast<unsigned long long>(g.other_cams.load()), static_cast<unsigned long long>(g.last_other.load()),
+                static_cast<unsigned long long>(view), static_cast<unsigned long long>(view_block0()), g.diag_p[0], g.diag_p[1], g.diag_p[2],
+                g.diag_p[3], g.diag_p[4], g.diag_p[5], e.eye, e.tan_left, e.tan_right, e.tan_up, e.tan_down, g.game[0], g.game[1], g.game[2],
+                g.game[4], g.game[5], g.game[6]);
+    }
     g.placed.fetch_add(1, std::memory_order_relaxed);
     if (!g.logged) {
         g.logged = true;
@@ -142,11 +182,16 @@ int hook_view(::Ctx* c, uint64_t, void*) {
 int hook_proj(::Ctx* c, uint64_t, void*) {
     if (g.eye_in_view.load(std::memory_order_acquire) < 0) return 0;
     const uint64_t cam = c->x[20];
-    if (!cam || cam != view_block0() || !guest::ok(cam, kViewProj + 64)) return 0;
+    if (!cam || cam != view_block0() || !guest::ok(cam, kViewProj + 64)) {
+        g.other_cams.fetch_add(1, std::memory_order_relaxed);
+        g.last_other.store(cam, std::memory_order_relaxed);
+        return 0;
+    }
     const xr::EyeView& e = g.eye;
     float* P = reinterpret_cast<float*>(cam + kProj);
     const float* V = reinterpret_cast<const float*>(cam + kView);
     const float p23 = P[11];
+    g.diag_p[0] = P[0], g.diag_p[1] = P[5], g.diag_p[2] = P[8], g.diag_p[3] = P[9], g.diag_p[4] = P[10], g.diag_p[5] = P[11];
     if (!(std::fabs(p23) > 0.5f) || !(std::fabs(P[5]) > 1e-6f)) return 0;   // not a perspective projection
     const float rl = e.tan_right - e.tan_left, ud = e.tan_up - e.tan_down;
     if (!(rl > 1e-3f) || !(ud > 1e-3f)) return 0;
@@ -165,6 +210,7 @@ int hook_proj(::Ctx* c, uint64_t, void*) {
     for (float f : VP)
         if (!std::isfinite(f)) return 0;
     std::memcpy(reinterpret_cast<void*>(cam + kViewProj), VP, sizeof VP);
+    note_fov_from(P);
     g.projected.fetch_add(1, std::memory_order_relaxed);
     return 0;
 }

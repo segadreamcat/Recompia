@@ -136,6 +136,8 @@ struct State {
     // game thread: the eye of the frame being simulated
     std::mutex gm;
     std::atomic<bool> world_this_frame{false};
+    bool fov_this_frame = false;
+    float fov_frame[4] = {};
     int cur_eye = -1;
     uint64_t cur_frame = 0;
     uint64_t next_id = 0;
@@ -150,6 +152,8 @@ struct State {
     uint64_t begun_frame = 0;       // the frame xrBeginFrame was called for (0: none open)
     bool recorded[2] = {false, false};
     bool world[2] = {false, false};
+    Tag tags[2];
+    uint64_t fov_logged = 0;
     int acquired_eye = -1;
     VkImage mid = VK_NULL_HANDLE;   // the intermediate copy (format conversion and flip by blit, then a bit copy into the sRGB swapchain)
     VkDeviceMemory mid_mem = VK_NULL_HANDLE;
@@ -741,6 +745,9 @@ Tag game_present() {
         t.eye = st.cur_eye;
         t.frame = st.cur_frame;
         t.world = st.world_this_frame.exchange(false, std::memory_order_acq_rel);
+        t.fov_ok = st.fov_this_frame;
+        std::memcpy(t.fov, st.fov_frame, sizeof t.fov);
+        st.fov_this_frame = false;
         if (st.cur_eye == 0) {   // the right eye of the same OpenXR frame comes next
             st.cur_eye = 1;
             return t;
@@ -787,6 +794,13 @@ Tag game_present() {
         st.cur_views[0] = st.cur_views[1] = EyeView{};
     }
     return t;
+}
+
+void note_rendered_fov(float tan_left, float tan_right, float tan_up, float tan_down) {
+    State& st = s();
+    std::lock_guard<std::mutex> lk(st.gm);
+    st.fov_frame[0] = tan_left, st.fov_frame[1] = tan_right, st.fov_frame[2] = tan_up, st.fov_frame[3] = tan_down;
+    st.fov_this_frame = true;
 }
 
 void note_world_view() { s().world_this_frame.store(true, std::memory_order_release); }
@@ -882,6 +896,7 @@ void render_record(VkCommandBuffer cb, VkImage src, VkFormat src_format, uint32_
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
     st.recorded[t.eye] = true;
     st.world[t.eye] = t.world;
+    st.tags[t.eye] = t;
 }
 
 void render_after_submit() {
@@ -930,6 +945,21 @@ void render_after_submit() {
         for (int e = 0; e < 2; ++e) {
             pv[e].pose = fd->views[e].pose;
             pv[e].fov = fd->views[e].fov;
+            const Tag& tg = st.tags[e];
+            if (tg.fov_ok) {   // what the picture was really rendered with
+                pv[e].fov.angleLeft = std::atan(tg.fov[0]);
+                pv[e].fov.angleRight = std::atan(tg.fov[1]);
+                pv[e].fov.angleUp = std::atan(tg.fov[2]);
+                pv[e].fov.angleDown = std::atan(tg.fov[3]);
+            }
+            if (st.frames_ended - st.fov_logged > 600 || !st.fov_logged) {
+                if (e == 1) st.fov_logged = st.frames_ended ? st.frames_ended : 1;
+                NXLOG_I(kTag, "eye %d: headset fov L %.1f R %.1f U %.1f D %.1f deg, submitted L %.1f R %.1f U %.1f D %.1f (%s), pos (%.3f, %.3f, %.3f)", e,
+                        fd->views[e].fov.angleLeft * 57.2958, fd->views[e].fov.angleRight * 57.2958, fd->views[e].fov.angleUp * 57.2958,
+                        fd->views[e].fov.angleDown * 57.2958, pv[e].fov.angleLeft * 57.2958, pv[e].fov.angleRight * 57.2958,
+                        pv[e].fov.angleUp * 57.2958, pv[e].fov.angleDown * 57.2958, tg.fov_ok ? "rendered" : "headset's",
+                        fd->views[e].pose.position.x, fd->views[e].pose.position.y, fd->views[e].pose.position.z);
+            }
             pv[e].subImage.swapchain = st.swap[e].sc;
             pv[e].subImage.imageRect = {{0, 0}, {static_cast<int32_t>(st.swap[e].w), static_cast<int32_t>(st.swap[e].h)}};
             pv[e].subImage.imageArrayIndex = 0;
