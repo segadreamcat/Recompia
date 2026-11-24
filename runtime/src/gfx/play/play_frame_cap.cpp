@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Play mode: present mode choice, the fps snap and the frame cap policy.
 #include "play_state.h"
+#include "nxrt/xr.h"
 
 namespace nxrt::play {
 using namespace detail;
@@ -55,6 +56,8 @@ void log_frame_cap(double req, double snapped, float hz, int k, const char* reas
 void apply_frame_cap(const Settings& s) {
     G& st = g();
     double cap = s.display.fps_cap;
+    // PokopiaVR: the headset paces the game (xrWaitFrame, two game frames per headset frame); a monitor limit would halve the eye rate
+    if (xr::wanted()) cap = 0;
     if (cap < 0) {
         // fps_limit = auto: the display's refresh rate (no limit while it is unknown, e.g. headless runs)
         const float hz = st.window ? platform::display_refresh_hz() : 0.f;

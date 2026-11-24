@@ -8,6 +8,7 @@
 // pkp_frame_rate.cpp (frame rate), pkp_mouse_camera.cpp (mouse camera), pkp_mouse_mode.cpp (Joy-Con 2 mouse mode). This file installs them
 // and answers play mode's GamePlay table.
 #include "input/pkp_play.h"
+#include "nxrt/xr.h"
 #include "input/pkp_play_internal.h"
 #include "core/pkp_settings.h"
 
@@ -166,7 +167,7 @@ void install(const FeatureInstall& in) {
     s.host = in.host;
     s.hooks = &in.hooks;
     s.fps_fix.store(settings::get_bool(settings::Key::FrameTimeFix));
-    s.hold_on.store(settings::get_bool(settings::Key::EventHold));
+    s.hold_on.store(settings::get_bool(settings::Key::EventHold) && !xr::wanted());   // PokopiaVR: no 60 Hz hold (it halves the eye rate)
     s.hold_ns = static_cast<uint64_t>(settings::get_int(settings::Key::EventHoldMs)) * 1000000ull;
     s.mouse_cam.store(settings::get_bool(settings::Key::MouseCamera));
     s.game_limit.store(settings::get_bool(settings::Key::GameFrameLimit));

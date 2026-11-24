@@ -16,6 +16,8 @@
 //   world_scale = 100    game world units per metre of head movement (a block is 100 units)
 //   head_height = 60     world units from the follow camera's look-at point (the character) up to the eyes
 //   mirror_x = 0         1: mirror the headset's left and right (if the eyes come out swapped: the game's world turns out left-handed)
+//   panel_distance = 2.5 metres to the flat panel that shows the title and menus (outside the world)
+//   panel_width = 3.2    its width in metres
 //   loader =             the OpenXR loader to load (default openxr_loader.dll next to the exe, then the system's)
 #pragma once
 #include <cstdint>
@@ -24,6 +26,8 @@ namespace nxrt::xr {
 
 // [vr] enabled and a session that has been created (it may not be running yet: the headset may be off or another app may be in front).
 bool active();
+// [vr] enabled (whether or not a headset answered): for settings that must be chosen before the session exists.
+bool wanted();
 // The session is running and the headset shows this app's frames: the camera module should place the eyes.
 bool running();
 
@@ -43,8 +47,11 @@ EyeView eye_view();
 struct Tag {
     int eye = -1;                       // -1: not a VR frame
     uint64_t frame = 0;                 // the OpenXR frame (1, 2, ...)
+    bool world = false;                 // the camera module placed this eye in the world (else: a menu or the title, shown on a flat panel)
 };
 Tag game_present();
+// The game thread: the camera module placed this frame's eye (the frame shows the world in stereo, not a menu).
+void note_world_view();
 
 // Controllers, as Switch pad input (nxrt/input_source.h NpadButton bits; sticks -32767..32767, +Y up). All zero while not running.
 struct Pad {
@@ -58,5 +65,7 @@ Pad pad();
 float world_scale();
 float head_height();
 bool mirror_x();
+float panel_distance();
+float panel_width();
 
 }  // namespace nxrt::xr
