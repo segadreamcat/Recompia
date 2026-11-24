@@ -1,0 +1,143 @@
+# PokopiaVR: builds pkp_rt.dll (Recompia 0.16.0 runtime + the VR changes) on a Windows runner and packs the drop-in zip.
+# Same steps as release.yml's windows-runtime job, nothing published: the zip is a workflow artifact.
+name: PokopiaVR build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [pokopia-vr]
+
+env:
+  LLVM_VERSION: 23.1.4
+  VERSION: 0.16.0
+  OPENXR_VERSION: 1.1.49
+
+jobs:
+  windows-runtime-vr:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Third-party sources cache
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: nxrt-deps-win-v1
+
+      - name: LLVM ${{ env.LLVM_VERSION }} (cache)
+        id: llvm
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\LLVM
+          key: llvm-${{ env.LLVM_VERSION }}-win64-v1
+
+      - name: LLVM ${{ env.LLVM_VERSION }}
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: |
+          $msi = "$env:RUNNER_TEMP\llvm.msi"
+          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.msi" -OutFile $msi -MaximumRetryCount 5 -RetryIntervalSec 30
+          Start-Process msiexec -Wait -ArgumentList '/i', $msi, '/qn'
+          & 'C:\Program Files\LLVM\bin\clang-cl.exe' --version
+
+      - name: LLVM on PATH
+        run: |
+          'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: libvpx cache
+        id: vpx
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-libvpx-x64-windows-static-v1
+
+      - name: libvpx
+        if: steps.vpx.outputs.cache-hit != 'true'
+        run: C:\vcpkg\vcpkg.exe install libvpx:x64-windows-static
+
+      - name: Texture tools (astc2bc7, astcdec DLLs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./tools/textures/scripts/fetch_third_party.ps1
+          ./tools/textures/scripts/build.ps1
+
+      - name: Pre-fetch release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $d = Join-Path $env:GITHUB_WORKSPACE 'build\deps'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          gh release download release-3.4.18 -R libsdl-org/SDL -p SDL3-3.4.18.tar.gz -D $d --clobber
+          gh release download v1.5.7 -R facebook/zstd -p zstd-1.5.7.tar.gz -D $d --clobber
+          gh release download "release-$env:OPENXR_VERSION" -R KhronosGroup/OpenXR-SDK-Source -p "openxr_loader_windows-$env:OPENXR_VERSION.zip" -D $env:RUNNER_TEMP --clobber
+          exit 0
+
+      - name: Pre-fetch dependency sources (codeload)
+        run: |
+          $root = Join-Path $PWD 'build/depsrc'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $deps = @(
+            @{ n = 'VULKAN_HEADERS'; u = 'https://codeload.github.com/KhronosGroup/Vulkan-Headers/zip/refs/tags/vulkan-sdk-1.4.363.0'; h = 'f4be95220ff0ee0b1c620301ff4fe9ae48592d71f4c30f2d5c571351a153ae81' },
+            @{ n = 'VOLK'; u = 'https://codeload.github.com/zeux/volk/zip/refs/tags/vulkan-sdk-1.4.363.0'; h = '889b90fdcbe9cee7b118339d640c6895b7be5c920d309c44b744692063275b3d' },
+            @{ n = 'VMA'; u = 'https://codeload.github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/zip/refs/tags/v3.4.0'; h = 'ce9a61ea5e72284ac9ccc152c214eef381ab57bfd7383f20232e5a652e3afda6' },
+            @{ n = 'IMGUI'; u = 'https://codeload.github.com/ocornut/imgui/zip/refs/tags/v1.92.9b'; h = 'e1c46d676c2bcb7ced847ba27f50553e33a19db97b3cadaec7f8be64449139f8' }
+          )
+          $dargs = @()
+          foreach ($d in $deps) {
+            $zip = Join-Path $root "$($d.n).zip"
+            curl.exe -fL --retry 5 --retry-delay 15 --retry-all-errors -o $zip $d.u
+            if ($LASTEXITCODE -ne 0) { continue }
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $d.h) { continue }
+            $out = Join-Path $root $d.n
+            Expand-Archive $zip $out -Force
+            $inner = Get-ChildItem $out -Directory | Select-Object -First 1
+            if ($inner) { $dargs += "-DFETCHCONTENT_SOURCE_DIR_$($d.n)=$($inner.FullName -replace '\\', '/')" }
+          }
+          "CMAKE_DEP_ARGS=$($dargs -join ' ')" >> $env:GITHUB_ENV
+          exit 0
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: pkp_rt.dll
+        run: |
+          $depArgs = @()
+          if ($env:CMAKE_DEP_ARGS) { $depArgs = @($env:CMAKE_DEP_ARGS -split ' ' | Where-Object { $_ }) }
+          cmake -S game-build -B build/rtdll -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+                -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+                -DPKP_RT_DLL=ON -DPKP_RELEASE=ON "-DPKP_VERSION=$env:VERSION" `
+                "-DNXRT_DEPS_DIR=$env:GITHUB_WORKSPACE\build\deps" @depArgs
+          if ($LASTEXITCODE) { exit 1 }
+          cmake --build build/rtdll --target pkp_rt
+
+      - name: Pack PokopiaVR
+        run: |
+          $pkg = Join-Path $env:RUNNER_TEMP 'PokopiaVR'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item build/rtdll/pkp_rt.dll $pkg
+          Copy-Item vr/PlayVR.bat, vr/README-VR.txt $pkg
+          Copy-Item runtime/third_party/openxr/LICENSE (Join-Path $pkg 'LICENSE.OpenXR.txt')
+          $xz = Join-Path $env:RUNNER_TEMP "openxr_loader_windows-$env:OPENXR_VERSION.zip"
+          $xo = Join-Path $env:RUNNER_TEMP 'openxr'
+          Expand-Archive $xz $xo -Force
+          $dll = Get-ChildItem $xo -Recurse -Filter openxr_loader.dll | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if (-not $dll) { Write-Error 'openxr_loader.dll (x64) not found'; exit 1 }
+          Copy-Item $dll.FullName $pkg
+          Get-ChildItem $pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PokopiaVR-${{ env.VERSION }}-windows-x64
+          path: ${{ runner.temp }}/PokopiaVR
+          compression-level: 6

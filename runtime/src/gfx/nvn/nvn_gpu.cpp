@@ -4,6 +4,7 @@
 // Design follows smo-recomp (record on game threads, replay on one render thread) and SuperMarioWonderRecomp docs/nvn (a submit
 // is replayed under one lock and never overlaps the next); the code is new.
 #include "nxrt/nvn_backend.h"
+#include "xr/xr_vk.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -1451,6 +1452,7 @@ void present(Window* window, int index) {
     nxrt::hitch_note_game_present();
     // the frame boundary's limiter wait for the next frame is due from here (lowlat.h); the frame's presentation record starts (present_timing.h)
     const uint64_t frame = extras::present_timing_game_present(extras::pace_note_game_present());
+    const xr::Tag xr_tag = xr::game_present();   // PokopiaVR: the eye this frame rendered; waits for the next headset frame after a right eye
     {
         std::lock_guard<std::mutex> lk(g->pmu);
         g->last_window = Ref<Window>::share(window);
@@ -1467,6 +1469,7 @@ void present(Window* window, int index) {
         Ref<Window> keep = Ref<Window>::share(window);
         run_on_render_thread([&] {
             extras::present_timing_render_begin(frame);
+            xr::render_set_tag(xr_tag);
             present_on_render_thread(window, index);
         });
         return;
@@ -1481,8 +1484,9 @@ void present(Window* window, int index) {
     Ref<Window> keep = Ref<Window>::share(window);
     {
         std::lock_guard<std::mutex> lk(g->qmu);
-        g->queue.push_back([keep, index, frame] {
+        g->queue.push_back([keep, index, frame, xr_tag] {
             extras::present_timing_render_begin(frame);
+            xr::render_set_tag(xr_tag);
             present_on_render_thread(keep.get(), index);
             std::lock_guard<std::mutex> l2(g->pmu);
             --g->presents_pending;
@@ -1511,6 +1515,7 @@ void present_again() {
         std::lock_guard<std::mutex> lk(g->qmu);
         g->queue.push_back([keep, index] {
             extras::present_timing_render_begin(0);    // a repeated frame has no record
+            xr::render_set_tag({});                     // PokopiaVR: a repeat is no eye
             present_on_render_thread(keep.get(), index, true);
             std::lock_guard<std::mutex> l2(g->pmu);
             --g->presents_pending;

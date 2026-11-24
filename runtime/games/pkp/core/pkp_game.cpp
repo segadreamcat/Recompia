@@ -32,6 +32,7 @@
 #include "core/pkp_save_uuid.h"
 #include "ui/pkp_save_now.h"
 #include "render/pkp_shoulder_camera.h"
+#include "render/pkp_vr_camera.h"
 #include "ui/pkp_sort.h"
 #include "ui/pkp_box_tabs.h"
 #include "render/pkp_taa.h"
@@ -109,6 +110,7 @@ constexpr Entry kEntries[] = {
     port(&kTaaProbeFeature),
 #endif
     port(&kShoulderCameraFeature),
+    port(&kVrCameraFeature),   // PokopiaVR: after the shoulder camera, so the headset's view is the one in the block
     mod(&kJumpFeature, JumpMomentum), mod(&kAimFeature, CameraAim), port(&kAimDebugFeature), mod(&kTitleFeature, TitleQuit), mod(&kSortFeature, InventorySort),
     mod(&kBoxTabsFeature, BoxTabs),   // shares Sort's screen frame; both hooks let the game frame run
     mod(&kCraftFeature, CraftSearch), mod(&kItemEditFeature, ItemEditor), mod(&kPokemonCapFeature, PokemonCap), mod(&kSaveNowFeature, SaveNow),
