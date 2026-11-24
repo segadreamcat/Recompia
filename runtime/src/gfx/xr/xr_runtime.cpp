@@ -134,6 +134,9 @@ struct State {
     std::atomic<int32_t> pad_lx{0}, pad_ly{0}, pad_rx{0}, pad_ry{0};
 
     // game thread: the eye of the frame being simulated
+    std::atomic<int64_t> last_time{0}, period{0};   // the render thread's newest predicted display time and frame period
+    XrTime render_time = 0;
+    bool render_should = false;
     std::mutex gm;
     static constexpr int kHist = 4;
     Tag hist[kHist];
@@ -785,17 +788,17 @@ void game_present_done() {
         clear_pad();
         return;
     }
-    XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
-    XrFrameState fs{XR_TYPE_FRAME_STATE};
-    if (XR_FAILED(st.f.WaitFrame(st.session, &wi, &fs))) return;
+    // no waiting here: the render thread runs xrWaitFrame (and so paces the game through the present queue); the eyes of the next pair
+    // are placed for one headset frame after the newest predicted display time, and the compositor is told exactly that pose
+    const int64_t t0 = st.last_time.load(std::memory_order_acquire);
+    if (!t0) return;
     read_actions();
-
     FrameData fd;
-    fd.time = fs.predictedDisplayTime;
-    fd.should_render = fs.shouldRender == XR_TRUE;
+    fd.time = t0 + st.period.load(std::memory_order_relaxed);
+    fd.should_render = true;
     XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
     li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    li.displayTime = fs.predictedDisplayTime;
+    li.displayTime = fd.time;
     li.space = st.local;
     XrViewState vs{XR_TYPE_VIEW_STATE};
     uint32_t nv = 0;
@@ -840,23 +843,45 @@ Pad pad() {
 }
 
 // ---- the render thread -----------------------------------------------------------------------------------------------------------
-void render_set_tag(Tag t) {
-    t_render_tag = t;
+namespace {
+// xrWaitFrame + xrBeginFrame (the render thread, fm not held while waiting). False: no frame open.
+bool open_frame() {
     State& st = s();
-    if (t.eye != 0 || !running()) return;
-    // the left eye opens the OpenXR frame
+    XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
+    XrFrameState fs{XR_TYPE_FRAME_STATE};
+    if (!ok(st.f.WaitFrame(st.session, &wi, &fs), "xrWaitFrame")) return false;
+    st.last_time.store(fs.predictedDisplayTime, std::memory_order_release);
+    st.period.store(fs.predictedDisplayPeriod, std::memory_order_relaxed);
+    st.render_time = fs.predictedDisplayTime;
+    st.render_should = fs.shouldRender == XR_TRUE;
     std::lock_guard<std::mutex> lk(st.fm);
-    if (!st.session_begun.load() || !frame_slot(t.frame)) return;
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
     const XrResult r = st.f.BeginFrame(st.session, &bi);
     if (XR_FAILED(r)) {
         NXLOG_W(kTag, "xrBeginFrame failed (%d)", static_cast<int>(r));
-        st.begun_frame = 0;
-        return;
+        return false;
     }
-    st.begun_frame = t.frame;
-    st.recorded[0] = st.recorded[1] = false;
-    st.world[0] = st.world[1] = false;
+    return true;
+}
+}  // namespace
+
+void render_set_tag(Tag t) {
+    t_render_tag = t;
+    State& st = s();
+    if (!running() || !st.session_begun.load()) return;
+    if (t.eye == 0 && frame_slot(t.frame)) {   // the left eye opens the headset frame
+        st.begun_frame = open_frame() ? t.frame : 0;
+        st.recorded[0] = st.recorded[1] = false;
+        st.world[0] = st.world[1] = false;
+    } else if (!st.last_time.load()) {         // start-up: one empty frame for a first display time
+        if (open_frame()) {
+            std::lock_guard<std::mutex> lk(st.fm);
+            XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
+            ei.displayTime = st.render_time;
+            ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            ok(st.f.EndFrame(st.session, &ei), "xrEndFrame (start-up)");
+        }
+    }
 }
 
 Tag render_tag() { return t_render_tag; }
@@ -868,7 +893,7 @@ void render_record(VkCommandBuffer cb, VkImage src, VkFormat src_format, uint32_
     std::lock_guard<std::mutex> lk(st.fm);
     if (st.begun_frame != t.frame) return;
     const FrameData* fd = frame_slot(t.frame);
-    if (!fd || !fd->should_render || !fd->views_ok) return;
+    if (!fd || !st.render_should || !fd->views_ok) return;
 
     const int32_t cx = crop && crop[2] > 0 ? crop[0] : 0, cy = crop && crop[3] > 0 ? crop[1] : 0;
     const uint32_t w = crop && crop[2] > 0 ? static_cast<uint32_t>(crop[2]) : src_w;
@@ -938,18 +963,18 @@ void render_after_submit() {
     if (t.eye != 1 || st.begun_frame != t.frame || !st.session_begun.load()) return;
     const FrameData* fd = frame_slot(t.frame);
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
-    ei.displayTime = fd ? fd->time : 0;
+    ei.displayTime = st.render_time;
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     const XrCompositionLayerBaseHeader* layers[1] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
-    const bool both = fd && fd->should_render && fd->views_ok && st.recorded[0] && st.recorded[1] && st.swap[0].w == st.swap[1].w &&
+    const bool both = fd && st.render_should && fd->views_ok && st.recorded[0] && st.recorded[1] && st.swap[0].w == st.swap[1].w &&
                       st.swap[0].h == st.swap[1].h && st.world[0] && st.world[1];
     // outside the world (title, menus, loading): the newest picture on a flat panel that stays put in front of the recentred view
     const int flat = both ? -1 : st.recorded[1] ? 1 : st.recorded[0] ? 0 : -1;
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     const XrCompositionLayerBaseHeader* qlayers[1] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad)};
-    if (!both && flat >= 0 && fd && fd->should_render) {
+    if (!both && flat >= 0 && st.render_should) {
         const Swap& sw = st.swap[flat];
         quad.space = st.local;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
