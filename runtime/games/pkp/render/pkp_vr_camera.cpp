@@ -126,6 +126,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     g.valid = true;
     g.eye = e;
     g.eye_in_view.store(e.eye, std::memory_order_release);
+    xr::note_world_view();
     // camera aim casts its ray from the follow camera's eye plus this offset (pkp_view_offset.h)
     view_offset::set(0, eye.x - g.game[0], eye.y - g.game[1], eye.z - g.game[2]);
     g.placed.fetch_add(1, std::memory_order_relaxed);

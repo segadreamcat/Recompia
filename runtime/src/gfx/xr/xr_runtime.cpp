@@ -135,6 +135,7 @@ struct State {
 
     // game thread: the eye of the frame being simulated
     std::mutex gm;
+    std::atomic<bool> world_this_frame{false};
     int cur_eye = -1;
     uint64_t cur_frame = 0;
     uint64_t next_id = 0;
@@ -148,6 +149,7 @@ struct State {
     Swap swap[2];
     uint64_t begun_frame = 0;       // the frame xrBeginFrame was called for (0: none open)
     bool recorded[2] = {false, false};
+    bool world[2] = {false, false};
     int acquired_eye = -1;
     VkImage mid = VK_NULL_HANDLE;   // the intermediate copy (format conversion and flip by blit, then a bit copy into the sRGB swapchain)
     VkDeviceMemory mid_mem = VK_NULL_HANDLE;
@@ -608,8 +610,22 @@ float head_height() {
     return v;
 }
 
+float panel_distance() {
+    static const float v = static_cast<float>(nxrt::config_get_double("vr", "panel_distance", 2.5));
+    return v;
+}
+float panel_width() {
+    static const float v = static_cast<float>(nxrt::config_get_double("vr", "panel_width", 3.2));
+    return v;
+}
+
 bool mirror_x() {
     static const bool v = nxrt::config_get_bool("vr", "mirror_x", false);
+    return v;
+}
+
+bool wanted() {
+    static const bool v = nxrt::config_get_bool("vr", "enabled", false);
     return v;
 }
 
@@ -724,6 +740,7 @@ Tag game_present() {
         std::lock_guard<std::mutex> lk(st.gm);
         t.eye = st.cur_eye;
         t.frame = st.cur_frame;
+        t.world = st.world_this_frame.exchange(false, std::memory_order_acq_rel);
         if (st.cur_eye == 0) {   // the right eye of the same OpenXR frame comes next
             st.cur_eye = 1;
             return t;
@@ -772,6 +789,8 @@ Tag game_present() {
     return t;
 }
 
+void note_world_view() { s().world_this_frame.store(true, std::memory_order_release); }
+
 Pad pad() {
     State& st = s();
     Pad p;
@@ -802,6 +821,7 @@ void render_set_tag(Tag t) {
     }
     st.begun_frame = t.frame;
     st.recorded[0] = st.recorded[1] = false;
+    st.world[0] = st.world[1] = false;
 }
 
 Tag render_tag() { return t_render_tag; }
@@ -861,6 +881,7 @@ void render_record(VkCommandBuffer cb, VkImage src, VkFormat src_format, uint32_
     barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
     st.recorded[t.eye] = true;
+    st.world[t.eye] = t.world;
 }
 
 void render_after_submit() {
@@ -887,7 +908,24 @@ void render_after_submit() {
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     const XrCompositionLayerBaseHeader* layers[1] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
     const bool both = fd && fd->should_render && fd->views_ok && st.recorded[0] && st.recorded[1] && st.swap[0].w == st.swap[1].w &&
-                      st.swap[0].h == st.swap[1].h;
+                      st.swap[0].h == st.swap[1].h && st.world[0] && st.world[1];
+    // outside the world (title, menus, loading): the newest picture on a flat panel that stays put in front of the recentred view
+    const int flat = both ? -1 : st.recorded[1] ? 1 : st.recorded[0] ? 0 : -1;
+    XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    const XrCompositionLayerBaseHeader* qlayers[1] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad)};
+    if (!both && flat >= 0 && fd && fd->should_render) {
+        const Swap& sw = st.swap[flat];
+        quad.space = st.local;
+        quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        quad.subImage.swapchain = sw.sc;
+        quad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(sw.w), static_cast<int32_t>(sw.h)}};
+        quad.pose.orientation.w = 1.f;
+        quad.pose.position = {0.f, 0.f, -panel_distance()};
+        quad.size.width = panel_width();
+        quad.size.height = panel_width() * static_cast<float>(sw.h) / static_cast<float>(sw.w);
+        ei.layerCount = 1;
+        ei.layers = qlayers;
+    }
     if (both) {
         for (int e = 0; e < 2; ++e) {
             pv[e].pose = fd->views[e].pose;
