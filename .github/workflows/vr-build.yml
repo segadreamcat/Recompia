@@ -12,6 +12,9 @@ env:
   VERSION: 0.16.0
   OPENXR_VERSION: 1.1.49
 
+permissions:
+  contents: write
+
 jobs:
   windows-runtime-vr:
     runs-on: windows-2025
@@ -141,3 +144,13 @@ jobs:
           name: PokopiaVR-${{ env.VERSION }}-windows-x64
           path: ${{ runner.temp }}/PokopiaVR
           compression-level: 6
+
+      - name: Release (test build)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "vr-test-${{ github.run_number }}"
+          $zip = Join-Path $env:RUNNER_TEMP 'PokopiaVR-windows-x64.zip'
+          Compress-Archive -Path (Join-Path $env:RUNNER_TEMP 'PokopiaVR\*') -DestinationPath $zip -Force
+          gh release create $tag $zip (Join-Path $env:RUNNER_TEMP 'PokopiaVR\pkp_rt.dll') -R ${{ github.repository }} --target ${{ github.sha }} --prerelease `
+            --title "PokopiaVR test ${{ github.run_number }}" --notes "Test build for Recompia 0.16.0 (${{ github.sha }}). Drop-in: see README-VR.txt."
