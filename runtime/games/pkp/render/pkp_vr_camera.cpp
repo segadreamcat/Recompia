@@ -33,7 +33,7 @@ constexpr uint64_t kViewFirst = 0x49b0;       // player 0's view block: root + t
 constexpr uint64_t kCameraPlayer = 0x8;       // follow camera: the player index (signed byte)
 constexpr uint64_t kEye = 0x10, kBlockBytes = 0x15c;
 // Established camera builder and lens fields from pkp_aspect.cpp; rebuild at the source, before the view handover.
-constexpr uint64_t kProjectionBuild = 0x1f12114;
+constexpr uint64_t kProjectionBuild = 0x1f12114, kProjectionFields = 0x1f12130;
 constexpr size_t kFov = 328;
 constexpr size_t kView = 128, kProj = 192, kViewProj = 256;
 
@@ -76,6 +76,8 @@ struct State {
     float game_eye[3] = {};
     uint64_t diag_ns = 0;
     float diag_p[6] = {};
+    V3 placed_eye, placed_right, placed_up, placed_back;
+    uint64_t audited = 0;
 };
 State g;
 
@@ -172,6 +174,8 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     const V3 fwd = yaw(rotate(e.quat, V3{0, 0, -1}), g.yaw_s, g.yaw_c);
     const V3 up = yaw(rotate(e.quat, V3{0, 1, 0}), g.yaw_s, g.yaw_c);
     const V3 look = add(eye, scale(fwd, 100.f));
+    g.placed_eye = eye; g.placed_up = up; g.placed_back = scale(fwd, -1.f);
+    g.placed_right = yaw(rotate(e.quat, V3{1, 0, 0}), g.yaw_s, g.yaw_c);
     const xr::EyeView hand = xr::hand_aim();
     V3 aim_eye = add(anchor, yaw(scale(V3{e.center[0] - g.origin[0], e.center[1] - g.origin[1], e.center[2] - g.origin[2]}, s), g.yaw_s, g.yaw_c));
     V3 aim_dir = fwd;
@@ -197,9 +201,13 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     std::memcpy(lens, reinterpret_cast<const void*>(view + kFov), sizeof lens);
     if (!g.valid || std::memcmp(lens, g.written_lens, sizeof lens) != 0) std::memcpy(g.game_lens, lens, sizeof lens);
     const float hx = std::fmax(std::fabs(e.tan_left), std::fabs(e.tan_right));
-    const float hy = std::fmax(std::fabs(e.tan_down), std::fabs(e.tan_up));
+    // Keep the native lens aspect. Separate scene paths derive horizontal scale from the display aspect even when
+    // the source camera requests another shape. A wider symmetric render FOV encloses the headset without that split;
+    // the compositor receives the actual rendered FOV and maps its visible region to the headset.
+    const float aspect = g.game_lens[1];
+    const float hy = std::fmax(std::fmax(std::fabs(e.tan_down), std::fabs(e.tan_up)), hx / aspect);
     g.written_lens[0] = 2.f * std::atan(hy);
-    g.written_lens[1] = hx / hy;
+    g.written_lens[1] = aspect;
     std::memcpy(reinterpret_cast<void*>(view + kFov), g.written_lens, sizeof g.written_lens);
     guest::call(c, g.base + kProjectionBuild, view, 0, 0, 0, 0, (c->x[31] - 0x400) & ~uint64_t{15});
     g.valid = true;
@@ -241,10 +249,31 @@ int hook_proj(::Ctx* c, uint64_t, void*) {
         return 0;
     }
     const float* P = reinterpret_cast<const float*>(cam + kProj);
+    if (++g.audited % 300 == 1) {
+        const float* V = reinterpret_cast<const float*>(cam + kView);
+        const float ex = -(V[0] * V[12] + V[1] * V[13] + V[2] * V[14]);
+        const float ey = -(V[4] * V[12] + V[5] * V[13] + V[6] * V[14]);
+        const float ez = -(V[8] * V[12] + V[9] * V[13] + V[10] * V[14]);
+        NXLOG_I(kTag, "view audit: eye error (%.4f %.4f %.4f), right error (%.4f %.4f %.4f), up error (%.4f %.4f %.4f), back error (%.4f %.4f %.4f)",
+            ex-g.placed_eye.x, ey-g.placed_eye.y, ez-g.placed_eye.z,
+            V[0]-g.placed_right.x, V[4]-g.placed_right.y, V[8]-g.placed_right.z,
+            V[1]-g.placed_up.x, V[5]-g.placed_up.y, V[9]-g.placed_up.z,
+            V[2]-g.placed_back.x, V[6]-g.placed_back.y, V[10]-g.placed_back.z);
+    }
     g.diag_p[0] = P[0], g.diag_p[1] = P[5], g.diag_p[2] = P[8], g.diag_p[3] = P[9], g.diag_p[4] = P[10], g.diag_p[5] = P[11];
     note_fov_from(P);
     xr::note_rendered_camera(reinterpret_cast<const float*>(cam + kView), reinterpret_cast<const float*>(cam + kViewProj));
     g.projected.fetch_add(1, std::memory_order_relaxed);
+    return 0;
+}
+
+// Keep the VR FOV on every projection build, including builds made before the follow-view write; the native lens aspect
+// is retained so independent scene paths that derive their horizontal scale from the display agree with this camera.
+int hook_projection_fields(::Ctx* c, uint64_t, void*) {
+    if (!g.valid || !xr::running() || g.eye_in_view.load(std::memory_order_relaxed) < 0) return 0;
+    const uint64_t cam = c->x[0];
+    if (cam != view_block0() || !guest::ok(cam, kBlockBytes)) return 0;
+    std::memcpy(reinterpret_cast<void*>(cam + kFov), g.written_lens, sizeof g.written_lens);
     return 0;
 }
 
@@ -264,6 +293,7 @@ void install(const FeatureInstall& in) {
     g.base = in.base;
     in.hooks.add_mid(in.base + kViewWrite, &hook_view);
     in.hooks.add_mid(in.base + kCamSubmit, &hook_proj);
+    in.hooks.add_mid(in.base + kProjectionFields, &hook_projection_fields);
     NXLOG_I(kTag, "VR camera: hooks main+0x%llx (view), main+0x%llx (lens audit); source camera lens rebuilt before view copies",
             static_cast<unsigned long long>(kViewWrite), static_cast<unsigned long long>(kCamSubmit));
 }

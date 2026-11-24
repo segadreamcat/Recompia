@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VR: keep native lens aspect across scene passes and preserve stereo pairs when stationary camera matrices repeat.
+
 - VR: build the scene lens before camera copies and associate eye images with their rendered camera uniforms.
 
 - VR: independent headset frame submission, complete stereo-pair handoff, player-position first person, and tracked controller aiming.

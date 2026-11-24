@@ -1,12 +1,14 @@
-PokopiaVR test 10
+PokopiaVR test 11
 
 Start Virtual Desktop on the Quest, connect to this PC, then start SteamVR.
 Run PlayVR.bat beside pkp.exe. The dedicated VR controls profile is controls-vr.ini.
 Start at 72 Hz in Virtual Desktop. Keep the current SteamVR OpenXR runtime for this comparison.
 
 Changes
-  Camera FOV and aspect are set at the source before view copies, using the game projection builder; no late asymmetric matrix override.
-  Eye images are matched to the camera uniforms consumed by the scene draw. Unmatched images are skipped instead of guessing an eye.
+  The source camera keeps the native display aspect and uses a symmetric FOV covering the headset. The compositor receives that actual FOV.
+  Every projection rebuild keeps the VR lens. Objects and terrain therefore agree even on scene paths that enforce the native display aspect.
+  Eye images are matched to scene camera uniforms. Stationary-camera matches prefer the sibling of the captured left eye, keeping pairs together.
+  Unmatched images are skipped instead of guessing an eye. Sampled diagnostics audit projection consistency without inspecting every draw.
   Independent headset frame pump on a separate GPU queue; the last complete stereo pair is reprojected during a slow game frame.
   Eyes advance on camera updates, not extra presentations. Each eye retains its actual render pose; queued frames cannot overwrite tracking metadata.
   Timeline semaphores carry staged images between the game and headset queues without holding the game queue during OpenXR calls.
