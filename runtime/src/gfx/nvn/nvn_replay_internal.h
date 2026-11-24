@@ -694,6 +694,7 @@ bool tsr_jitter(uint32_t* words, size_t n_words);
 void support_for_draw(const ProgLayout& pl, bool compute);
 void bind_sets(const ProgLayout& pl, VkPipelineBindPoint bp);
 void temporal_gbuffer_note();
+void xr_gbuffer_note();
 void tonemap_for_draw(const ProgLayout& pl);
 void scene_stretch_for_draw(const ProgLayout& pl);
 void scene_sharpen_for_draw(const ProgLayout& pl);   // [gfx] scene_sharpen at the game's draw into the window texture (SceneStretch::into_window)

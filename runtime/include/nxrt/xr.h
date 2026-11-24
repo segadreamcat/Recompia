@@ -9,7 +9,6 @@
 //   enabled = 0          1: start an OpenXR session
 //   world_scale = 100    game world units per metre of head movement (a block is 100 units)
 //   head_height = 120    world units above the player's position
-//   frame_lag = 1        presents between a frame's camera and the present that shows it (the engine draws one frame behind)
 //   mirror_x = 0         1: mirror the headset's left and right (if the eyes come out swapped: the game's world turns out left-handed)
 //   panel_distance = 2.5 metres to the flat panel that shows the title and menus (outside the world)
 //   panel_width = 3.2    its width in metres
@@ -41,7 +40,7 @@ EyeView eye_view();
 // Right controller aim pose from the same tracking snapshot; invalid when tracking is unavailable.
 EyeView hand_aim();
 
-// The game present carries the camera snapshot through the engine's camera-to-image delay. Extra presents never advance the camera eye.
+// Image metadata is matched to the camera uniforms consumed by the scene draw. Presents never advance the camera eye.
 struct Tag {
     int eye = -1;                       // -1: not a VR frame
     uint64_t frame = 0;                 // the rendered camera pair (1, 2, ...)
@@ -58,6 +57,8 @@ void note_world_view(const EyeView& view);
 // The game thread: the field of view this frame's picture was rendered with, read back from the projection (tangents, left and down
 // negative). The compositor gets this one, so the picture matches even when the projection could not be set to the headset's own.
 void note_rendered_fov(float tan_left, float tan_right, float tan_up, float tan_down);
+// Register the completed source camera. The renderer matches its actual uniforms instead of assuming a fixed frame delay.
+void note_rendered_camera(const float view[16], const float view_projection[16]);
 
 // Controllers, as Switch pad input (nxrt/input_source.h NpadButton bits; sticks -32767..32767, +Y up). All zero while not running.
 struct Pad {

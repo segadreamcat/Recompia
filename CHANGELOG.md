@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VR: build the scene lens before camera copies and associate eye images with their rendered camera uniforms.
+
 - VR: independent headset frame submission, complete stereo-pair handoff, player-position first person, and tracked controller aiming.
 
 **Update:** press **Update** in the launcher. **Set up again** is not needed (saves and shaders are kept, no shader is translated again).

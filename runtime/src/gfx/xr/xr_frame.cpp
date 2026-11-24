@@ -55,7 +55,7 @@ void poll_events() {
             std::lock_guard<std::mutex> gl(st.gm);
             st.cur_eye = -1;
             st.camera = {};
-            for (auto& tag : st.hist) tag = {};
+            for (auto& camera : st.cameras) camera = {};
         }
     }
 }
@@ -178,7 +178,7 @@ void frame_loop() {
         { std::lock_guard<std::mutex> queue_lock(*st.vk_queue_mutex); begin_result = st.f.BeginFrame(st.session, &bi); }
         if (!ok(begin_result, "xrBeginFrame")) continue;
         read_actions();
-        // Camera work precedes presentation by at least two game frames. Submission always retains this actual render pose.
+        // Predict through the next headset interval; image matching retains the pose actually used by each scene draw.
         locate_tracking(fs.predictedDisplayTime + fs.predictedDisplayPeriod);
         if (fs.shouldRender) transport_frame();
         submit_layers(fs, panel_mode, panel_pose);

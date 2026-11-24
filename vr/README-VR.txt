@@ -1,10 +1,12 @@
-PokopiaVR test 9
+PokopiaVR test 10
 
 Start Virtual Desktop on the Quest, connect to this PC, then start SteamVR.
 Run PlayVR.bat beside pkp.exe. The dedicated VR controls profile is controls-vr.ini.
 Start at 72 Hz in Virtual Desktop. Keep the current SteamVR OpenXR runtime for this comparison.
 
 Changes
+  Camera FOV and aspect are set at the source before view copies, using the game projection builder; no late asymmetric matrix override.
+  Eye images are matched to the camera uniforms consumed by the scene draw. Unmatched images are skipped instead of guessing an eye.
   Independent headset frame pump on a separate GPU queue; the last complete stereo pair is reprojected during a slow game frame.
   Eyes advance on camera updates, not extra presentations. Each eye retains its actual render pose; queued frames cannot overwrite tracking metadata.
   Timeline semaphores carry staged images between the game and headset queues without holding the game queue during OpenXR calls.
@@ -27,7 +29,8 @@ Performance
   Adjust the VR profile through game Settings while launched in VR.
 
 Existing [vr] keys in pkp.ini
-  world_scale = 100, head_height = 120, frame_lag = 1, mirror_x = 0
+  world_scale = 100, head_height = 120, mirror_x = 0
+  The old frame_lag key is ignored: eye association now follows the rendered camera.
   panel_distance = 2.5, panel_width = 3.2
   Keep mirror_x at 0; it is not an eye-swap correction.
 

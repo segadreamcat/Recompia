@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PokopiaVR camera: the player's render view put at the character's eyes and turned by the headset, one eye per camera update (nxrt/xr.h).
 //
-// Two hooks, both on sites the game build already has (no Set up again):
-//   view   0x7100088e04 (pkp_shoulder_camera.cpp has the details): the follow camera's view block (x20) right before its view matrix is
-//          built from eye, look-at and up. Player 0's eye goes to the character (the player's position plus [vr] head_height) plus the
-//          headset eye's offset, turned by the follow camera's yaw (the right stick still turns, Skyrim style: the head only looks around).
-//          Look-at and up come from the headset's orientation, so pitch and roll are the head's own.
-//   proj   0x71008cc124 (pkp_aspect.cpp): a camera's view-projection is handed to the renderer (x20 = the camera). For player 0's view block
-//          the projection rows (+192) get the headset eye's own asymmetric field of view and the view-projection (+256) is rebuilt from the
-//          view rows (+128), so the picture is exactly what the compositor expects for that eye.
-// The game does not rewrite the view block every frame; as in the shoulder camera, the hook keeps what it wrote and takes the block as the
-// game's when it differs. Keep the shoulder camera at 0 / 0 while playing in VR (both write the same block).
+// The follow-camera hook changes the source camera before its view matrix and render copies are built. The engine's
+// own projection builder receives a symmetric lens that encloses the headset FOV. Every scene pass therefore uses the
+// same lens; OpenXR receives that actual symmetric FOV and handles the headset's asymmetric visible region.
+// The submit hook only observes the completed camera. Patching its projection here is too late: some passes already
+// copied the old lens, which makes props and terrain separate as the head tilts (the same constraint as pkp_aspect.cpp).
 #include "render/pkp_vr_camera.h"
 
 #include <atomic>
@@ -36,7 +31,10 @@ constexpr uint64_t kCamSubmit = 0x8cc124;     // mid: x20 = the camera whose vie
 constexpr uint64_t kViewRoot = 0x3483e18;     // GOT -> the qword holding the view blocks' root (pkp_view_projection.cpp)
 constexpr uint64_t kViewFirst = 0x49b0;       // player 0's view block: root + this
 constexpr uint64_t kCameraPlayer = 0x8;       // follow camera: the player index (signed byte)
-constexpr uint64_t kEye = 0x10, kBlockBytes = 0x150;
+constexpr uint64_t kEye = 0x10, kBlockBytes = 0x15c;
+// Established camera builder and lens fields from pkp_aspect.cpp; rebuild at the source, before the view handover.
+constexpr uint64_t kProjectionBuild = 0x1f12114;
+constexpr size_t kFov = 328;
 constexpr size_t kView = 128, kProj = 192, kViewProj = 256;
 
 struct V3 {
@@ -58,10 +56,10 @@ struct State {
     uint64_t base = 0;
     bool valid = false;
     float game[12] = {};       // original eye, look-at and up, restored together when VR stops
+    float game_lens[2] = {}, written_lens[2] = {};
     float written[12] = {};    // eye, look-at, up as this hook wrote them
     float yaw_s = 0, yaw_c = 1;
     std::atomic<int> eye_in_view{-1};   // the eye the view block holds (the projection hook uses the same eye's field of view)
-    xr::EyeView eye;                    // that eye (game thread only)
     std::atomic<uint64_t> placed{0}, projected{0}, other_cams{0};
     std::atomic<uint64_t> last_other{0};
     bool logged = false;
@@ -116,6 +114,10 @@ int hook_view(::Ctx* c, uint64_t, void*) {
             float cur[12];
             std::memcpy(cur, reinterpret_cast<const void*>(view + kEye), sizeof cur);
             if (std::memcmp(cur, g.written, sizeof cur) == 0) std::memcpy(reinterpret_cast<void*>(view + kEye), g.game, sizeof g.game);
+            if (std::memcmp(reinterpret_cast<const void*>(view + kFov), g.written_lens, sizeof g.written_lens) == 0) {
+                std::memcpy(reinterpret_cast<void*>(view + kFov), g.game_lens, sizeof g.game_lens);
+                guest::call(c, g.base + kProjectionBuild, view, 0, 0, 0, 0, (c->x[31] - 0x400) & ~uint64_t{15});
+            }
             g.valid = false;
         }
         g.eye_in_view.store(-1, std::memory_order_relaxed);
@@ -190,8 +192,17 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     out[8] = up.x, out[9] = up.y, out[10] = up.z;
     std::memcpy(reinterpret_cast<void*>(view + kEye), out, sizeof out);
     std::memcpy(g.written, out, sizeof out);
+    // Use camera fields, not a late matrix override. The game may rebuild/copy P for separate object and terrain passes.
+    float lens[2];
+    std::memcpy(lens, reinterpret_cast<const void*>(view + kFov), sizeof lens);
+    if (!g.valid || std::memcmp(lens, g.written_lens, sizeof lens) != 0) std::memcpy(g.game_lens, lens, sizeof lens);
+    const float hx = std::fmax(std::fabs(e.tan_left), std::fabs(e.tan_right));
+    const float hy = std::fmax(std::fabs(e.tan_down), std::fabs(e.tan_up));
+    g.written_lens[0] = 2.f * std::atan(hy);
+    g.written_lens[1] = hx / hy;
+    std::memcpy(reinterpret_cast<void*>(view + kFov), g.written_lens, sizeof g.written_lens);
+    guest::call(c, g.base + kProjectionBuild, view, 0, 0, 0, 0, (c->x[31] - 0x400) & ~uint64_t{15});
     g.valid = true;
-    g.eye = e;
     g.eye_in_view.store(e.eye, std::memory_order_release);
     xr::note_world_view(raw_eye);
     // camera aim casts its ray from the follow camera's eye plus this offset (pkp_view_offset.h)
@@ -229,30 +240,10 @@ int hook_proj(::Ctx* c, uint64_t, void*) {
         g.last_other.store(cam, std::memory_order_relaxed);
         return 0;
     }
-    const xr::EyeView& e = g.eye;
-    float* P = reinterpret_cast<float*>(cam + kProj);
-    const float* V = reinterpret_cast<const float*>(cam + kView);
-    const float p23 = P[11];
+    const float* P = reinterpret_cast<const float*>(cam + kProj);
     g.diag_p[0] = P[0], g.diag_p[1] = P[5], g.diag_p[2] = P[8], g.diag_p[3] = P[9], g.diag_p[4] = P[10], g.diag_p[5] = P[11];
-    if (!(std::fabs(p23) > 0.5f) || !(std::fabs(P[5]) > 1e-6f)) return 0;   // not a perspective projection
-    const float rl = e.tan_right - e.tan_left, ud = e.tan_up - e.tan_down;
-    if (!(rl > 1e-3f) || !(ud > 1e-3f)) return 0;
-    const float sx = 2.f / rl, cx = (e.tan_right + e.tan_left) * 0.5f;
-    const float sy = (P[5] > 0 ? 2.f : -2.f) / ud, cy = (e.tan_up + e.tan_down) * 0.5f;   // keeps the game's clip-space Y direction
-    // row-vector projection (clip = p * P): x_ndc = sx * (t - cx) for the tangent t = x / depth; the z row carries the off-centre terms
-    P[0] = sx, P[1] = 0, P[2] = 0, P[3] = 0;
-    P[4] = 0, P[5] = sy, P[6] = 0, P[7] = 0;
-    P[8] = -sx * cx * p23;
-    P[9] = -sy * cy * p23;
-    // P[10], P[11], P[12..15]: the game's depth mapping stays
-    float VP[16];
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j)
-            VP[i * 4 + j] = V[i * 4 + 0] * P[0 * 4 + j] + V[i * 4 + 1] * P[1 * 4 + j] + V[i * 4 + 2] * P[2 * 4 + j] + V[i * 4 + 3] * P[3 * 4 + j];
-    for (float f : VP)
-        if (!std::isfinite(f)) return 0;
-    std::memcpy(reinterpret_cast<void*>(cam + kViewProj), VP, sizeof VP);
     note_fov_from(P);
+    xr::note_rendered_camera(reinterpret_cast<const float*>(cam + kView), reinterpret_cast<const float*>(cam + kViewProj));
     g.projected.fetch_add(1, std::memory_order_relaxed);
     return 0;
 }
@@ -273,7 +264,7 @@ void install(const FeatureInstall& in) {
     g.base = in.base;
     in.hooks.add_mid(in.base + kViewWrite, &hook_view);
     in.hooks.add_mid(in.base + kCamSubmit, &hook_proj);
-    NXLOG_I(kTag, "VR camera: hooks main+0x%llx (view), main+0x%llx (projection); active while an OpenXR session runs",
+    NXLOG_I(kTag, "VR camera: hooks main+0x%llx (view), main+0x%llx (lens audit); source camera lens rebuilt before view copies",
             static_cast<unsigned long long>(kViewWrite), static_cast<unsigned long long>(kCamSubmit));
 }
 

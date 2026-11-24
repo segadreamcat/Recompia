@@ -28,10 +28,7 @@ Tag game_present() {
     std::lock_guard<std::mutex> lk(st.gm);
     Tag now = st.camera;
     if (!st.world_mode.load() || !now.world) { now = {}; now.eye = 0; }
-    for (int i = State::kHist - 1; i > 0; --i) st.hist[i] = st.hist[i - 1];
-    st.hist[0] = now;
-    static const int lag = static_cast<int>(std::clamp<int64_t>(config_get_int("vr", "frame_lag", 1), 0, State::kHist - 1));
-    return st.hist[lag];
+    return now;
 }
 
 void set_world_active(bool active) {
@@ -39,6 +36,8 @@ void set_world_active(bool active) {
     std::lock_guard<std::mutex> lk(st.gm);
     if (st.world_mode.exchange(active) != active) {
         st.cur_eye = -1; st.camera = {};
+        for (auto& camera : st.cameras) camera = {};
+        st.camera_sequence = 0;
         NXLOG_I(kTag, "camera mode: %s", active ? "world" : "panel");
     }
 }

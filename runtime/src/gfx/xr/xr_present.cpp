@@ -169,7 +169,7 @@ void destroy_images() {
 namespace nxrt::xr {
 using namespace detail;
 namespace { thread_local Tag t_render_tag; }
-void render_set_tag(Tag tag) { t_render_tag = tag; }
+void render_set_tag(Tag tag) { t_render_tag = render_resolve_tag(tag); }
 Tag render_tag() { return t_render_tag; }
 
 void render_record(VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y) {

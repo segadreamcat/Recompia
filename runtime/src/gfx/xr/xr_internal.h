@@ -122,8 +122,10 @@ struct State {
     EyeView tracking[2], hands[2], cur_views[2], cur_hands[2];
     uint64_t reference_epoch = 0, panel_epoch = 0;
     XrTime recenter_time = 0;
-    static constexpr int kHist = 4;
-    Tag hist[kHist];
+    struct CameraTag { Tag tag; float view[16] = {}, vp[16] = {}; };
+    static constexpr int kCameraHistory = 128;
+    CameraTag cameras[kCameraHistory];
+    uint64_t camera_sequence = 0;
     int cur_eye = -1;
     uint64_t next_id = 0;
     Tag camera;

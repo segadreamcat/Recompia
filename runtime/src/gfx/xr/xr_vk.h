@@ -24,6 +24,9 @@ void vk_device_created(VkInstance instance, VkPhysicalDevice physical, VkDevice 
 // Before Vulkan device destruction: stop the frame pump and destroy OpenXR graphics resources.
 void vk_shutdown(VkDevice device);
 // Render-thread metadata travels with each present.
+// The first matching scene draw identifies the actual eye. Missing matches skip capture rather than guessing an eye.
+void render_note_camera(const float view[16], const float view_projection[16]);
+Tag render_resolve_tag(Tag intent);
 void render_set_tag(Tag t);
 Tag render_tag();
 // Records the copy of the presented picture (src, in SHADER_READ_ONLY_OPTIMAL, left in that layout) into the tagged eye's swapchain.
