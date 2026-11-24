@@ -93,7 +93,7 @@ struct FrameData {
     bool views_ok = false;
     XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 };
-constexpr int kRing = 4;
+constexpr int kRing = 8;
 
 struct Swap {
     XrSwapchain sc = XR_NULL_HANDLE;
@@ -135,6 +135,9 @@ struct State {
 
     // game thread: the eye of the frame being simulated
     std::mutex gm;
+    static constexpr int kHist = 4;
+    Tag hist[kHist];
+    bool wait_due = false;
     std::atomic<bool> world_this_frame{false};
     bool fov_this_frame = false;
     float fov_frame[4] = {};
@@ -610,7 +613,7 @@ float world_scale() {
     return v;
 }
 float head_height() {
-    static const float v = static_cast<float>(nxrt::config_get_double("vr", "head_height", 60.0));
+    static const float v = static_cast<float>(nxrt::config_get_double("vr", "head_height", 120.0));
     return v;
 }
 
@@ -736,36 +739,55 @@ EyeView eye_view() {
     return st.cur_views[st.cur_eye];
 }
 
+// The game's picture lags its camera by [vr] frame_lag presents (the engine records a frame's draws while the next one is simulated):
+// the present that shows an eye is the one frame_lag presents after the frame whose camera placed it.
+int frame_lag() {
+    static const int v = static_cast<int>(std::clamp<int64_t>(nxrt::config_get_int("vr", "frame_lag", 1), 0, 3));
+    return v;
+}
+
 Tag game_present() {
     State& st = s();
     if (!active()) return {};
-    Tag t;
+    std::lock_guard<std::mutex> lk(st.gm);
+    Tag now;   // what this frame's camera did
+    now.eye = st.cur_eye;
+    now.frame = st.cur_frame;
+    now.world = st.world_this_frame.exchange(false, std::memory_order_acq_rel);
+    now.fov_ok = st.fov_this_frame;
+    std::memcpy(now.fov, st.fov_frame, sizeof now.fov);
+    st.fov_this_frame = false;
+    // the picture presented now is the camera of frame_lag frames ago
+    for (int i = State::kHist - 1; i > 0; --i) st.hist[i] = st.hist[i - 1];
+    st.hist[0] = now;
+    const Tag t = st.hist[frame_lag()];
+    // the next frame's eye: the right eye of the same OpenXR frame, or a new OpenXR frame (game_present_done waits for it)
+    if (st.cur_eye == 0) {
+        st.cur_eye = 1;
+        st.wait_due = false;
+    } else {
+        st.cur_eye = -1;
+        st.wait_due = true;
+    }
+    return t;
+}
+
+void game_present_done() {
+    State& st = s();
+    if (!active()) return;
     {
         std::lock_guard<std::mutex> lk(st.gm);
-        t.eye = st.cur_eye;
-        t.frame = st.cur_frame;
-        t.world = st.world_this_frame.exchange(false, std::memory_order_acq_rel);
-        t.fov_ok = st.fov_this_frame;
-        std::memcpy(t.fov, st.fov_frame, sizeof t.fov);
-        st.fov_this_frame = false;
-        if (st.cur_eye == 0) {   // the right eye of the same OpenXR frame comes next
-            st.cur_eye = 1;
-            return t;
-        }
-        st.cur_eye = -1;
+        if (!st.wait_due) return;
+        st.wait_due = false;
     }
     poll_events();
-    if (st.exiting.load()) {
+    if (st.exiting.load() || !st.running.load()) {
         clear_pad();
-        return t;
-    }
-    if (!st.running.load()) {
-        clear_pad();
-        return t;
+        return;
     }
     XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState fs{XR_TYPE_FRAME_STATE};
-    if (XR_FAILED(st.f.WaitFrame(st.session, &wi, &fs))) return t;
+    if (XR_FAILED(st.f.WaitFrame(st.session, &wi, &fs))) return;
     read_actions();
 
     FrameData fd;
@@ -793,7 +815,6 @@ Tag game_present() {
     } else {
         st.cur_views[0] = st.cur_views[1] = EyeView{};
     }
-    return t;
 }
 
 void note_rendered_fov(float tan_left, float tan_right, float tan_up, float tan_down) {

@@ -1447,6 +1447,7 @@ void present(Window* window, int index) {
             xr::render_set_tag(xr_tag);
             present_on_render_thread(window, index);
         });
+        xr::game_present_done();
         return;
     }
     {
@@ -1470,6 +1471,7 @@ void present(Window* window, int index) {
         g_gauge_render_queue.add(1);
     }
     g->qcv.notify_one();
+    xr::game_present_done();   // PokopiaVR: after the queue, so the render thread can begin the headset frame this wait depends on
 }
 
 // The game's last frame once more, queued like a present (the overlay is drawn on top as on every frame). Only when the game has not
