@@ -48,10 +48,15 @@ struct Tag {
     int eye = -1;                       // -1: not a VR frame
     uint64_t frame = 0;                 // the OpenXR frame (1, 2, ...)
     bool world = false;                 // the camera module placed this eye in the world (else: a menu or the title, shown on a flat panel)
+    bool fov_ok = false;                // fov holds the field of view the picture was really rendered with (tangents: left, right, up, down)
+    float fov[4] = {};
 };
 Tag game_present();
 // The game thread: the camera module placed this frame's eye (the frame shows the world in stereo, not a menu).
 void note_world_view();
+// The game thread: the field of view this frame's picture was rendered with, read back from the projection (tangents, left and down
+// negative). The compositor gets this one, so the picture matches even when the projection could not be set to the headset's own.
+void note_rendered_fov(float tan_left, float tan_right, float tan_up, float tan_down);
 
 // Controllers, as Switch pad input (nxrt/input_source.h NpadButton bits; sticks -32767..32767, +Y up). All zero while not running.
 struct Pad {
