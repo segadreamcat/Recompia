@@ -264,6 +264,11 @@ bool play_follow_live() {
     return t != 0 && mono_ns() - t < 1000000000ull;
 }
 
+bool play_camera_free() {
+    const uint64_t t = st().turn_ns.load(std::memory_order_relaxed);
+    return t != 0 && mono_ns() - t < 250000000ull;
+}
+
 bool play_photo_live() {
     const uint64_t t = g_photo_ns.load(std::memory_order_relaxed);
     return t != 0 && mono_ns() - t < st().grace_ns;

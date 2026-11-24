@@ -67,6 +67,10 @@ struct Pad {
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
 };
 Pad pad();
+// Optional application commands from controller shortcuts, consumed by the game on its own frame thread.
+enum Command : uint32_t { kTogglePerspective = 1, kScreenshot = 2 };
+void set_shortcuts_enabled(bool enabled);
+uint32_t take_commands();
 
 // [vr] settings the camera module reads.
 float world_scale();

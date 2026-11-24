@@ -413,6 +413,9 @@ The game's own keys, in the `[pkp]` section of the game ini (`pkp.ini`; `nxrt.in
 | `pkp` | `camera_grace_ms` | `250` | `0` to `5000` (clamped into it) | `NXRT_PKP_CAMERA_GRACE_MS` | How long after the camera's turn branch last ran the mouse still turns the camera, in ms. Next start. |
 | `pkp` | `camera_shoulder_side` | `0` | `-2` to `2` (clamped into it) | `NXRT_PKP_CAMERA_SHOULDER_SIDE` | Over-the-shoulder camera: how far the view is moved to the side of the character, in blocks (positive: to the right, 0: the game's own camera). |
 | `pkp` | `camera_shoulder_height` | `0` | `-1` to `2` (clamped into it) | `NXRT_PKP_CAMERA_SHOULDER_HEIGHT` | Over-the-shoulder camera: how far the view is moved up, in blocks (positive: up, 0: the game's own camera). |
+| `pkp` | `vr_first_person` | `1` | `1` `0` | `NXRT_PKP_VR_FIRST_PERSON` | In VR, use first person; right-stick click or F11 switches to the follow-camera position. |
+| `pkp` | `vr_auto_reading` | `1` | `1` `0` | `NXRT_PKP_VR_AUTO_READING` | In VR, show conversations and menus on a raised reading panel when camera controls are locked. |
+| `pkp` | `vr_shortcuts` | `1` | `1` `0` | `NXRT_PKP_VR_SHORTCUTS` | VR shortcuts: right-stick click/F11 changes view; short left-stick click/F12 captures a screenshot. |
 | `pkp` | `menu_mouse` | `1` | `1` `0` | `NXRT_PKP_MENU_MOUSE` | The mouse pointer in the game's menus. Next start. |
 | `pkp` | `menu_log` | `1` | a whole number | `NXRT_PKP_MENU_LOG` | Menu logging: 0 off, 1 what the pointer does (and the sort's and search's lists), 2 more detail, 3 the layout chain once a second. Next start. |
 | `pkp` | `menu_in_game` | `1` | `1` `0` | `NXRT_PKP_MENU_IN_GAME` | The mouse pointer also works in menus opened during play. Next start. |
@@ -421,6 +424,8 @@ The game's own keys, in the `[pkp]` section of the game ini (`pkp.ini`; `nxrt.in
 | `pkp` | `kbm_icons` | `1` | `1` `0` | `NXRT_PKP_KBM_ICONS` | Keyboard and mouse icons in the game's button prompts. Next start. |
 | `pkp` | `quality_preset` | unset | `switch2` `high` `ultra` `steamdeck` `legion_go_s` `laptop` `desktop` | `NXRT_PKP_QUALITY_PRESET` | When set, the graphics preset (wins over the F1 page's). Next start. |
 | `pkp` | `fog_strength` | `1` | `0` to `1.5` (clamped into it) | `NXRT_PKP_FOG_STRENGTH` | Multiplier on the height fog's amount. Next start. |
+| `pkp` | `exposure_scaled` | `1` | `1` `0` | `NXRT_PKP_EXPOSURE_SCALED` | The exposure histogram measures the scene at the size it is rendered (off: the full 1080p layout, slower, same brightness). Next start. |
+| `pkp` | `scene_upscaler` | `0` | `0` to `2` (clamped into it) | `NXRT_PKP_SCENE_UPSCALER` | On a phone, the upscaler of the 3D picture: 0 off, 1 SGSR, 2 bicubic (with [gfx] ui_native the menus stay sharp). |
 | `pkp` | `lod_distance` | `1` | `0.25` to `8` (clamped into it) | `NXRT_PKP_LOD_DISTANCE` | When set, multiplier on the distance where placed objects switch to their low-detail model. Next start. |
 | `pkp` | `quality_probe` | `0` | `1` `0` | `NXRT_PKP_QUALITY_PROBE` | Log what the quality hooks see (diagnostics). Next start. |
 | `pkp` | `game_taa` | `0` | `0` to `2` (clamped into it) | `NXRT_PKP_GAME_TAA` | Experimental: 1 turns on the engine's camera TAA jitter, 2 also its TemporalAA3 pass switch (0: the game's). Next start. |

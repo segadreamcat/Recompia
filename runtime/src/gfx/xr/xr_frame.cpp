@@ -117,7 +117,7 @@ void submit_layers(const XrFrameState& fs, bool& panel_mode, XrPosef& panel_pose
             panel_pose = {};
             panel_pose.orientation.y = std::sin(angle * 0.5f);
             panel_pose.orientation.w = std::cos(angle * 0.5f);
-            panel_pose.position = {head.center[0] - std::sin(angle) * panel_distance(), head.center[1], head.center[2] - std::cos(angle) * panel_distance()};
+            panel_pose.position = {head.center[0] - std::sin(angle) * panel_distance(), head.center[1] + 0.30f, head.center[2] - std::cos(angle) * panel_distance()};
         }
         panel_mode = true;
         quad.space = st.local;

@@ -115,6 +115,10 @@ struct State {
     XrAction aim[2] = {};
     XrSpace aim_space[2] = {};
     bool actions_ready = false;
+    std::atomic<bool> shortcuts_enabled{true};
+    std::atomic<uint32_t> commands{0};
+    bool left_click_was = false, right_click_was = false, left_click_used = false, right_click_used = false;
+    uint64_t left_click_ns = 0, right_click_ns = 0;
     std::atomic<uint64_t> pad_buttons{0};
     std::atomic<int32_t> pad_lx{0}, pad_ly{0}, pad_rx{0}, pad_ry{0};
 

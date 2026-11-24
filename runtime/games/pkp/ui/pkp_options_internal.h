@@ -120,7 +120,7 @@ constexpr RowList rows_of(const Row (&r)[N]) {
 }
 
 // ---- pkp_options_rows.cpp ----
-extern const RowList kSoundRows, kDisplayRows, kPerformanceRows, kGraphicsRows, kPictureRows, kMouseRows, kControllerRows, kGameplayRows,
+extern const RowList kVrRows, kSoundRows, kDisplayRows, kPerformanceRows, kGraphicsRows, kPictureRows, kMouseRows, kControllerRows, kGameplayRows,
     kInventoryRows;
 void refresh_audio_devices();                 // the Output Device row's list, read again when the screen opens
 

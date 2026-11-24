@@ -6,6 +6,7 @@
 #include <cstdio>
 #include "nxrt/input_source.h"
 #include "nxrt/log.h"
+#include "nxrt/qpc.h"
 namespace nxrt::xr::detail {
 // ---- actions ----------------------------------------------------------------------------------------------------------------------
 XrPath path(const char* p) {
@@ -133,12 +134,24 @@ void read_actions() {
     if (b(kMenu)) btns |= hid::btn(hid::kBtnPlus);
     const bool lc = b(kLClick), rc = b(kRClick);
     if (lc && rc) btns |= hid::btn(hid::kBtnMinus);
-    else if (rc) btns |= hid::btn(hid::kBtnStickR);
+    else if (rc && !st.shortcuts_enabled.load()) btns |= hid::btn(hid::kBtnStickR);
     if (fl(kLTrig) > 0.5f) btns |= hid::btn(hid::kBtnZL);
     if (fl(kRTrig) > 0.5f) btns |= hid::btn(hid::kBtnZR);
     if (fl(kLGrip) > 0.5f) btns |= hid::btn(hid::kBtnL);
     if (fl(kRGrip) > 0.5f) btns |= hid::btn(hid::kBtnR);
     XrVector2f l = vec(kLStick), r = vec(kRStick);
+    const uint64_t now = qpc::now_ns();
+    if (lc && !st.left_click_was) { st.left_click_ns = now; st.left_click_used = false; }
+    if (rc && !st.right_click_was) { st.right_click_ns = now; st.right_click_used = false; }
+    if (lc && (rc || std::fabs(l.x) > .5f || std::fabs(l.y) > .5f)) st.left_click_used = true;
+    if (lc && rc) st.right_click_used = true;
+    if (st.shortcuts_enabled.load(std::memory_order_relaxed)) {
+        if (!lc && st.left_click_was && !st.left_click_used && now-st.left_click_ns < 450000000ull)
+            st.commands.fetch_or(kScreenshot, std::memory_order_relaxed);
+        if (!rc && st.right_click_was && !st.right_click_used && now-st.right_click_ns < 450000000ull)
+            st.commands.fetch_or(kTogglePerspective, std::memory_order_relaxed);
+    }
+    st.left_click_was = lc; st.right_click_was = rc;
     if (lc && !rc) {
         if (l.x < -0.5f) btns |= hid::btn(hid::kBtnLeft);
         if (l.x >  0.5f) btns |= hid::btn(hid::kBtnRight);
@@ -157,6 +170,8 @@ void read_actions() {
 
 void clear_pad() {
     State& st = s();
+    st.left_click_was = st.right_click_was = false;
+    st.commands.store(0);
     st.pad_buttons.store(0);
     st.pad_lx.store(0), st.pad_ly.store(0), st.pad_rx.store(0), st.pad_ry.store(0);
 }

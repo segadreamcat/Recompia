@@ -34,6 +34,9 @@ enum class Key : uint8_t {
     // the over-the-shoulder camera (pkp_shoulder_camera.cpp)
     CameraShoulderSide,
     CameraShoulderHeight,
+    VrFirstPerson,
+    VrAutoReading,
+    VrShortcuts,
     // the menu pointer (pkp_menu.cpp) and the prompt icons (pkp_kbm.cpp)
     MenuMouse,
     MenuLog,

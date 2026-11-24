@@ -16,6 +16,7 @@ int play_ui_canvas_width();    // logical layout-camera width; the authored 1920
 int play_ui_canvas_height();   // logical layout-camera height; the authored 1080 when no UI override is active
 uint32_t play_display_calls();
 bool play_follow_live();   // the follow camera updated within the last second: the player is in the world (not the title)
+bool play_camera_free(); // the camera-control branch ran recently; false during conversations and menus
 bool play_photo_live();    // the photo camera took look input within the grace time ([pkp] camera_grace_ms): photo mode, in play
 
 }  // namespace nxrt::games::pkp

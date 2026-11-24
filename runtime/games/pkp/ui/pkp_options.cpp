@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "nxrt/hooks.h"
+#include "nxrt/xr.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "play_game.h"
@@ -90,13 +91,20 @@ struct Tab {
     TabModel* model;        // nullptr: none of our rows
 };
 
+// Ask after startup, when the game's configuration is installed.
+class VrTab final : public StaticTab {
+public:
+    VrTab() : StaticTab(kVrRows) {}
+    int count() const override { return xr::wanted() ? StaticTab::count() : 0; }
+};
+VrTab g_camera;
 StaticTab g_sound{kSoundRows, &refresh_audio_devices}, g_display{kDisplayRows}, g_performance{kPerformanceRows}, g_graphics{kGraphicsRows},
     g_picture{kPictureRows}, g_mouse{kMouseRows}, g_controller{kControllerRows}, g_gameplay{kGameplayRows},
     g_inventory{kInventoryRows};
 
 const Tab kTabs[] = {
     {nullptr, 1, nullptr},   // Game
-    {nullptr, 2, nullptr},   // Camera
+    {nullptr, 2, &g_camera}, // Camera + VR rows
     {nullptr, 3, &g_sound},
     {"Display", 4, &g_display},
     {"Performance", 5, &g_performance},

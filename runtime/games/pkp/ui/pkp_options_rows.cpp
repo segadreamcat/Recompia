@@ -333,6 +333,12 @@ const Row kMouse[] = {
     capture_row("Quick Save Key", "Saves while you play. Press left or right on this row (or click it), then press a keyboard key. It replaces that key's action in play. Esc cancels.", g_save_key),
 };
 
+const Row kVr[] = {
+    key_row("VR First Person", "Right-stick click or F11 switches between first person and the normal follow-camera position.", settings::Key::VrFirstPerson),
+    key_row("VR Reading Panel", "Show dialogue and menus farther away on a raised flat panel while the game locks camera controls.", settings::Key::VrAutoReading),
+    key_row("VR Shortcuts", "Short left-stick click or F12 saves a screenshot. Right-stick click or F11 changes perspective. Hold left stick and tilt for the D-pad; both sticks open Minus.", settings::Key::VrShortcuts),
+};
+
 const Row kController[] = {
     dynamic("Controller", "The controller that plays. All lets every connected controller play; pick one when other controllers on this PC belong to someone else.",
             controller_text, controller_max, ROW_INT(pad.controller)),
@@ -381,7 +387,7 @@ constexpr Row kInventory[] = {
 
 }  // namespace
 
-constinit const RowList kSoundRows = rows_of(kSound), kDisplayRows = rows_of(kDisplay), kPerformanceRows = rows_of(kPerformance),
+constinit const RowList kVrRows = rows_of(kVr), kSoundRows = rows_of(kSound), kDisplayRows = rows_of(kDisplay), kPerformanceRows = rows_of(kPerformance),
                         kGraphicsRows = rows_of(kGraphics), kPictureRows = rows_of(kPicture), kMouseRows = rows_of(kMouse),
                         kControllerRows = rows_of(kController), kGameplayRows = rows_of(kGameplay),
                         kInventoryRows = rows_of(kInventory);

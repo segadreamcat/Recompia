@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- VR: add perspective and screenshot shortcuts, native first-person body fading and raised automatic reading panels.
+
 - VR: keep native lens aspect across scene passes and preserve stereo pairs when stationary camera matrices repeat.
 
 - VR: build the scene lens before camera copies and associate eye images with their rendered camera uniforms.

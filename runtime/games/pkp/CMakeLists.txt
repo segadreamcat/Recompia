@@ -125,6 +125,7 @@ if(TARGET nxrt_gfx)
         "${_pkp}/render/pkp_taa.cpp"
         "${_pkp}/render/pkp_shoulder_camera.cpp"
         "${_pkp}/render/pkp_vr_camera.cpp"
+        "${_pkp}/render/pkp_vr_avatar.cpp"
         "${_pkp}/render/pkp_view_projection.cpp"
         # input
         "${_pkp}/input/pkp_play.cpp"
@@ -132,6 +133,7 @@ if(TARGET nxrt_gfx)
         "${_pkp}/input/pkp_photo_camera.cpp"
         "${_pkp}/input/pkp_mouse_mode.cpp"
         "${_pkp}/input/pkp_aim.cpp"
+        "${_pkp}/input/pkp_vr_controls.cpp"
         "${_pkp}/input/pkp_aim_debug.cpp"
         "${_pkp}/input/pkp_jump.cpp"
         "${_pkp}/input/pkp_kbm.cpp"

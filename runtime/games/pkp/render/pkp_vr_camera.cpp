@@ -7,6 +7,7 @@
 // The submit hook only observes the completed camera. Patching its projection here is too late: some passes already
 // copied the old lens, which makes props and terrain separate as the head tilts (the same constraint as pkp_aspect.cpp).
 #include "render/pkp_vr_camera.h"
+#include "render/pkp_vr_avatar.h"
 
 #include <atomic>
 #include <cmath>
@@ -16,6 +17,8 @@
 
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
+#include "core/pkp_settings.h"
+#include "input/pkp_play.h"
 #include "core/pkp_view_offset.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
@@ -64,6 +67,8 @@ struct State {
     std::atomic<uint64_t> last_other{0};
     bool logged = false;
     // one OpenXR frame's camera: both eyes from the same character position and yaw (the game moves between the two eye frames)
+    std::atomic<bool> playing{false};
+    bool first_person = true;
     bool latched = false;
     uint64_t latched_frame = 0, reference_epoch = 0;
     bool origin_valid = false;
@@ -112,6 +117,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
         e.tan_left = -e.tan_right, e.tan_right = -l;
     }
     if (!e.valid) {
+        g.eye_in_view.store(-1, std::memory_order_relaxed);
         if (g.valid) {   // VR stopped: the game's own view again
             float cur[12];
             std::memcpy(cur, reinterpret_cast<const void*>(view + kEye), sizeof cur);
@@ -138,6 +144,8 @@ int hook_view(::Ctx* c, uint64_t, void*) {
 
     // the left eye takes the follow camera's yaw (its horizontal forward taken to OpenXR's -Z) and the character's position; the right eye
     // of the same headset frame reuses them, so the two eyes differ only by the headset's own eye offset
+    const bool first = settings::get_bool(settings::Key::VrFirstPerson);
+    if (first != g.first_person) { g.first_person = first; g.latched = false; g.origin_valid = false; }
     if (!g.origin_valid || e.reference_epoch != g.reference_epoch) {
         std::memcpy(g.origin, e.center, sizeof g.origin);
         g.reference_epoch = e.reference_epoch;
@@ -163,7 +171,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
         float point[3];
         if (!guest::read(pos, point, sizeof point)) return 0;
         for (float value : point) if (!std::isfinite(value)) return 0;
-        g.anchor = V3{point[0], point[1] + xr::head_height(), point[2]};
+        g.anchor = first ? V3{point[0], point[1] + xr::head_height(), point[2]} : V3{g.game[0], g.game[1], g.game[2]};
         g.latched_frame = e.frame;
         g.game_eye[0] = g.game[0], g.game_eye[1] = g.game[1], g.game_eye[2] = g.game[2];
         g.latched = true;
@@ -278,16 +286,23 @@ int hook_projection_fields(::Ctx* c, uint64_t, void*) {
 }
 
 // Reuse the established active-follow-camera layout from camera aim. Camera hooks can update less often than presents.
-void game_frame(::Ctx*) {
+void game_frame(::Ctx* c) {
     const uint64_t manager = guest::deref(g.base + layout::kCameraManager);
     bool world = false;
     if (guest::ok(manager, layout::kActiveCameraIndex + 1)) {
         const int8_t index = rd<int8_t>(manager + layout::kActiveCameraIndex);
         if (index >= 0) world = guest::deref(manager + layout::kActiveCameraTable + static_cast<uint64_t>(index) * 8) == manager + layout::kFollowCamera;
     }
+    const uint64_t players = guest::deref(g.base + layout::kPlayerManager);
+    const uint64_t player = guest::deref(players + layout::kManagerPlayer);
+    const bool locked = guest::ok(player, layout::kInputLock + 1) && (rd<uint8_t>(player + layout::kInputLock) & layout::kInputLockBit);
+    if (world && settings::get_bool(settings::Key::VrAutoReading) && (!g.playing.load(std::memory_order_relaxed) || !play_camera_free() || locked)) world = false;
+    vr_avatar::update(c, world && xr::running() && settings::get_bool(settings::Key::VrFirstPerson));
     xr::set_world_active(world);
     if (!world) g.eye_in_view.store(-1, std::memory_order_relaxed);
 }
+
+void frame(bool playing, double, play::GameFrame*) { g.playing.store(playing, std::memory_order_relaxed); }
 
 void install(const FeatureInstall& in) {
     g.base = in.base;
@@ -302,6 +317,7 @@ void remove() {
     xr::set_world_active(false);
     view_offset::set(0, 0, 0, 0);
     g.valid = false;
+    g.playing.store(false, std::memory_order_relaxed);
     g.latched = g.origin_valid = false;
     { std::lock_guard<std::mutex> lk(g.aim_mutex); g.aim_valid = false; }
     g.eye_in_view.store(-1);
@@ -325,6 +341,6 @@ bool vr_camera::aim_ray(float eye[3], float direction[3]) {
     return true;
 }
 
-const Feature kVrCameraFeature = {.name = "vr_camera", .install = &install, .remove = &remove, .game_frame = &game_frame, .status_text = &status_text};
+const Feature kVrCameraFeature = {.name = "vr_camera", .install = &install, .remove = &remove, .frame = &frame, .game_frame = &game_frame, .status_text = &status_text};
 
 }  // namespace nxrt::games::pkp

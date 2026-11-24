@@ -62,6 +62,8 @@ EyeView hand_aim() {
     std::lock_guard<std::mutex> lk(s().gm);
     return s().running.load() ? s().cur_hands[1] : EyeView{};
 }
+void set_shortcuts_enabled(bool enabled) { s().shortcuts_enabled.store(enabled, std::memory_order_relaxed); }
+uint32_t take_commands() { return s().commands.exchange(0, std::memory_order_relaxed); }
 Pad pad() {
     State& st = s(); Pad p;
     if (!running()) return p;
