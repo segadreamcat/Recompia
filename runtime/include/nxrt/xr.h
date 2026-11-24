@@ -36,13 +36,12 @@ struct EyeView {
     float quat[4] = {0, 0, 0, 1};       // x, y, z, w
     float tan_left = -1, tan_right = 1, tan_up = 1, tan_down = -1;   // the eye's field of view as tangents (left and down negative)
 };
-// The game thread: the eye this game frame renders. Invalid while the session is not running.
+// Camera update: selects the next eye; both eyes of a pair use one tracking snapshot. Invalid outside the active world camera.
 EyeView eye_view();
 // Right controller aim pose from the same tracking snapshot; invalid when tracking is unavailable.
 EyeView hand_aim();
 
-// The game thread, at the game's present (the frame boundary): tags the frame just finished with the eye it rendered and moves on to the
-// next eye. Returns a complete camera snapshot that travels with the present to the graphics half.
+// The game present carries the camera snapshot through the engine's camera-to-image delay. Extra presents never advance the camera eye.
 struct Tag {
     int eye = -1;                       // -1: not a VR frame
     uint64_t frame = 0;                 // the rendered camera pair (1, 2, ...)
@@ -52,10 +51,10 @@ struct Tag {
     float fov[4] = {};
 };
 Tag game_present();
-// The game thread, after the present is queued: snapshots the next pair's tracking after a right eye; never waits for the headset.
-void game_present_done();
-// The game thread: the camera module placed this frame's eye (the frame shows the world in stereo, not a menu).
-void note_world_view();
+// The game camera module identifies whether its world camera is active, independently of how often that camera updates.
+void set_world_active(bool active);
+// The camera module placed this exact eye; metadata stays valid until the next camera update or mode change.
+void note_world_view(const EyeView& view);
 // The game thread: the field of view this frame's picture was rendered with, read back from the projection (tangents, left and down
 // negative). The compositor gets this one, so the picture matches even when the projection could not be set to the headset's own.
 void note_rendered_fov(float tan_left, float tan_right, float tan_up, float tan_down);

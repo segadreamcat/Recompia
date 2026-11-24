@@ -838,11 +838,20 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
             if (!listed && has_dext(e)) dev_exts.push_back(e);
         }
     }
-    float prio = 1.0f;
+    // Keep the compositor's potentially blocking queue operations off the game's graphics queue when VR is requested.
+    uint32_t xr_queues = 1;
+    if (xr::wanted()) {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_, &count, families.data());
+        if (families[queue_family_].queueCount >= 2) xr_queues = 2;
+    }
+    const float priorities[2] = {1.f, 1.f};
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci.queueFamilyIndex = queue_family_;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &prio;
+    qci.queueCount = xr_queues;
+    qci.pQueuePriorities = priorities;
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &en};
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
@@ -852,7 +861,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed (" + std::to_string(r) + ")");
     volkLoadDevice(device_);
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
-    xr::vk_device_created(instance_, physical_, device_, queue_family_, 0, &queue_mutex_);   // PokopiaVR: the OpenXR session on this queue
+    xr::vk_device_created(instance_, physical_, device_, queue_family_, xr_queues - 1, &queue_mutex_);   // PokopiaVR: the OpenXR session on this queue
 
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);

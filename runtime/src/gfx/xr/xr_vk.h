@@ -29,7 +29,7 @@ Tag render_tag();
 // Records the copy of the presented picture (src, in SHADER_READ_ONLY_OPTIMAL, left in that layout) into the tagged eye's swapchain.
 // crop: x, y, w, h in texels (w or h 0: the whole image). flip_y: the picture is stored bottom-up.
 void render_record(VkCommandBuffer cb, VkImage src, VkFormat src_format, uint32_t src_w, uint32_t src_h, const int32_t crop[4], bool flip_y);
-// After the Vulkan submit worker has drained: release images and publish only complete stereo pairs.
+// After the Vulkan submit worker has drained: signal image readiness on the game queue. OpenXR handoff belongs to the headset thread.
 void render_after_submit();
 
 }  // namespace nxrt::xr

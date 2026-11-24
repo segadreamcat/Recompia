@@ -254,7 +254,12 @@ void vk_device_created(VkInstance instance, VkPhysicalDevice physical, VkDevice 
     st.vk_instance = instance;
     st.vk_physical = physical;
     st.vk_device = device;
-    st.vk_queue_mutex = queue_mutex;
+    st.game_queue_mutex = queue_mutex;
+    st.vk_queue_mutex = queue_index ? &st.xr_queue_mutex : queue_mutex;
+    st.queue_family = queue_family;
+    vkGetDeviceQueue(device, queue_family, 0, &st.game_queue);
+    vkGetDeviceQueue(device, queue_family, queue_index, &st.xr_queue);
+    NXLOG_I(kTag, "graphics queue 0, headset queue %u in family %u", queue_index, queue_family);
     XrGraphicsBindingVulkanKHR gb{XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR};
     gb.instance = instance;
     gb.physicalDevice = physical;
@@ -291,6 +296,7 @@ void vk_device_created(VkInstance instance, VkPhysicalDevice physical, VkDevice 
         }
     }
     if (!st.sc_format) { give_up("no supported 8-bit eye format"); return; }
+    if (!create_transport()) { give_up("could not create headset image transport"); return; }
     st.pump = std::thread(&frame_loop);
     NXLOG_I(kTag, "session created (queue family %u), eye format %lld; put the headset on", queue_family, static_cast<long long>(st.sc_format));
 }

@@ -1452,7 +1452,7 @@ void present(Window* window, int index) {
     nxrt::hitch_note_game_present();
     // the frame boundary's limiter wait for the next frame is due from here (lowlat.h); the frame's presentation record starts (present_timing.h)
     const uint64_t frame = extras::present_timing_game_present(extras::pace_note_game_present());
-    const xr::Tag xr_tag = xr::game_present();   // PokopiaVR: the eye this frame rendered; waits for the next headset frame after a right eye
+    const xr::Tag xr_tag = xr::game_present();   // Camera metadata follows the presented image.
     {
         std::lock_guard<std::mutex> lk(g->pmu);
         g->last_window = Ref<Window>::share(window);
@@ -1472,7 +1472,6 @@ void present(Window* window, int index) {
             xr::render_set_tag(xr_tag);
             present_on_render_thread(window, index);
         });
-        xr::game_present_done();
         return;
     }
     {
@@ -1496,7 +1495,6 @@ void present(Window* window, int index) {
         g_gauge_render_queue.add(1);
     }
     g->qcv.notify_one();
-    xr::game_present_done();   // PokopiaVR: after the queue, so the render thread can begin the headset frame this wait depends on
 }
 
 // The game's last frame once more, queued like a present (the overlay is drawn on top as on every frame). Only when the game has not

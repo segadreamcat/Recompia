@@ -68,8 +68,22 @@ struct Swap {
     XrSwapchain sc = XR_NULL_HANDLE;
     std::vector<XrSwapchainImageVulkanKHR> images;
     uint32_t w = 0, h = 0;
-    bool acquired = false;
-    bool waited = false;
+};
+enum class ImageState { Free, Writing, Ready, Reading };
+struct StageImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t w = 0, h = 0;
+};
+struct Stage {
+    ImageState state = ImageState::Free;
+    StageImage image[2];
+    Tag tags[2];
+    bool written[2] = {}, world = false;
+    uint64_t frame = 0, ready_value = 0, consumed_value = 0;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
 };
 struct State {
     bool wanted = false;
@@ -85,6 +99,12 @@ struct State {
     VkPhysicalDevice vk_physical = VK_NULL_HANDLE;
     VkDevice vk_device = VK_NULL_HANDLE;
     std::mutex* vk_queue_mutex = nullptr;
+    std::mutex* game_queue_mutex = nullptr;
+    std::mutex xr_queue_mutex;
+    VkQueue game_queue = VK_NULL_HANDLE, xr_queue = VK_NULL_HANDLE;
+    uint32_t queue_family = 0;
+    VkSemaphore ready = VK_NULL_HANDLE, consumed = VK_NULL_HANDLE;
+    uint64_t ready_counter = 0, consumed_counter = 0;
     int64_t sc_format = 0;
     XrSessionState session_state = XR_SESSION_STATE_UNKNOWN;
     std::thread pump;
@@ -104,25 +124,26 @@ struct State {
     XrTime recenter_time = 0;
     static constexpr int kHist = 4;
     Tag hist[kHist];
-    bool wait_due = false, world_this_frame = false, fov_this_frame = false;
-    float fov_frame[4] = {};
     int cur_eye = -1;
-    uint64_t cur_frame = 0, next_id = 0;
+    uint64_t next_id = 0;
+    Tag camera;
+    std::atomic<bool> world_mode{false};
 
+    // fm protects only the three-slot CPU handoff. It is never held during an OpenXR call or a GPU wait.
     std::mutex fm;
-    // A complete pair remains untouched while the next pair is filled. No tracking-ring slots are referenced by queued presents.
-    Swap swap[2][2], panel;
-    int writing_pair = 0, published_pair = -1;
-    uint64_t writing_frame = 0, published_ns = 0, panel_ns = 0;
-    bool recorded[2] = {};
-    Tag tags[2], published_tags[2];
-    Swap* acquired = nullptr;
-    bool panel_recorded = false;
-    VkImage mid = VK_NULL_HANDLE;
-    VkDeviceMemory mid_mem = VK_NULL_HANDLE;
-    VkFormat mid_format = VK_FORMAT_UNDEFINED;
-    uint32_t mid_w = 0, mid_h = 0;
+    static constexpr int kStages = 3;
+    Stage stages[kStages];
+    int writing_stage = -1, capture_stage = -1, capture_eye = -1;
+    Tag capture_tag;
+    uint64_t captured_frame = 0;
+
+    // Headset-thread state; the render thread never acquires an OpenXR swapchain or accesses its VkQueue.
+    Swap swap[2], panel;
+    int published_pair = -1;
+    uint64_t published_ns = 0, panel_ns = 0;
+    Tag published_tags[2];
     uint64_t pairs_published = 0, frames_ended = 0;
+
 };
 State& s();
 bool ok(XrResult r, const char* what);
@@ -133,4 +154,6 @@ void clear_pad();
 EyeView to_eye(const XrView& v, int eye);
 void frame_loop();
 void destroy_images();
+bool create_transport();
+void transport_frame();
 } // namespace nxrt::xr::detail

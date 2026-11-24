@@ -109,12 +109,12 @@ using layout::kController;                       // movement component: the cont
 constexpr uint64_t kControllerYaw = 0x64;
 using layout::kPosition;
 using layout::kPlayerManager;
-constexpr uint64_t kCameraManager = 0x3561948;   // qword: the camera manager
+using layout::kCameraManager;
 using layout::kManagerPlayer;
 using layout::kMouseModeOn;
-constexpr uint64_t kFollow = 0x10;               // camera manager + 0x10: the embedded follow camera of slot 0
-constexpr uint64_t kActiveTable = 0xc58;         // + signed byte(manager + 0xcc8) * 8: the active camera pointer of slot 0
-constexpr uint64_t kActiveIndex = 0xcc8;
+constexpr uint64_t kFollow = layout::kFollowCamera;               // camera manager + 0x10: the embedded follow camera of slot 0
+constexpr uint64_t kActiveTable = layout::kActiveCameraTable;         // + signed byte(manager + 0xcc8) * 8: the active camera pointer of slot 0
+constexpr uint64_t kActiveIndex = layout::kActiveCameraIndex;
 constexpr uint64_t kLook = 0x50, kEye = 0x60;    // follow camera: look-at and eye (vec4)
 constexpr uint64_t kSwingPreviewReturn = 0x7223cc, kSwingLiveReturn = 0x6da458;  // the row helper's return into the swing shapes
 constexpr uint64_t kStepRows = 0x5a84, kStepFlag = 0x5a8c;  // character: step count ahead (int) and its flag; the swing shapes raise by it

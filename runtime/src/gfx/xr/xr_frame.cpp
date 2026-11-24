@@ -18,7 +18,6 @@ void poll_events() {
             st.session_state = state;
             NXLOG_I(kTag, "session state %d", static_cast<int>(state));
             if (state == XR_SESSION_STATE_READY) {
-                std::lock_guard<std::mutex> lk(st.fm);
                 XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO};
                 bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 if (ok(st.f.BeginSession(st.session, &bi), "xrBeginSession")) {
@@ -46,17 +45,17 @@ void poll_events() {
         }
         ev = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
     }
-    // A render may already own an image when STOPPING arrives. Let its submit and release finish before ending the session.
+    // All OpenXR image transactions finish on this thread before the next session event is processed.
     if (st.session_state == XR_SESSION_STATE_STOPPING && st.session_begun.load()) {
-        std::lock_guard<std::mutex> lk(st.fm);
-        if (!st.acquired) {
+        {
             ok(st.f.EndSession(st.session), "xrEndSession");
             st.session_begun.store(false);
             st.published_pair = -1;
             st.panel_ns = 0;
             std::lock_guard<std::mutex> gl(st.gm);
             st.cur_eye = -1;
-            for (auto& t : st.hist) t = {};
+            st.camera = {};
+            for (auto& tag : st.hist) tag = {};
         }
     }
 }
@@ -102,7 +101,6 @@ void submit_layers(const XrFrameState& fs, bool& panel_mode, XrPosef& panel_pose
     // Get tracking before fm: the game and image transport never need both locks at once.
     EyeView head;
     { std::lock_guard<std::mutex> lk(st.gm); head = st.tracking[0]; }
-    std::lock_guard<std::mutex> lk(st.fm);
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
     ei.displayTime = fs.predictedDisplayTime;
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -110,9 +108,7 @@ void submit_layers(const XrFrameState& fs, bool& panel_mode, XrPosef& panel_pose
     XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     const XrCompositionLayerBaseHeader* layers[1] = {};
-    const uint64_t now = qpc::now_ns();
-    // A single skipped camera hook must not replace the 3D world by a flat screenshot. Sustained menu frames may do so.
-    const bool menu = st.panel_ns && (st.published_pair < 0 || (st.panel_ns > st.published_ns && now - st.published_ns > 250000000ull));
+    const bool menu = st.panel_ns && (!st.world_mode.load() || st.published_pair < 0);
     if (fs.shouldRender && menu && st.panel.sc) {
         if ((!panel_mode || st.panel_epoch != head.reference_epoch) && head.valid) {
             st.panel_epoch = head.reference_epoch;
@@ -136,7 +132,7 @@ void submit_layers(const XrFrameState& fs, bool& panel_mode, XrPosef& panel_pose
         panel_mode = false;
         for (int e = 0; e < 2; ++e) {
             const Tag& t = st.published_tags[e];
-            const Swap& sw = st.swap[st.published_pair][e];
+            const Swap& sw = st.swap[e];
             std::memcpy(&views[e].pose.position, t.view.pos, sizeof t.view.pos);
             std::memcpy(&views[e].pose.orientation, t.view.quat, sizeof t.view.quat);
             views[e].fov = {std::atan(t.fov_ok ? t.fov[0] : t.view.tan_left), std::atan(t.fov_ok ? t.fov[1] : t.view.tan_right),
@@ -184,10 +180,10 @@ void frame_loop() {
         read_actions();
         // Camera work precedes presentation by at least two game frames. Submission always retains this actual render pose.
         locate_tracking(fs.predictedDisplayTime + fs.predictedDisplayPeriod);
+        if (fs.shouldRender) transport_frame();
         submit_layers(fs, panel_mode, panel_pose);
         const uint64_t now = qpc::now_ns();
         if (now - log_ns >= 5000000000ull) {
-            std::lock_guard<std::mutex> lk(st.fm);
             const double seconds = static_cast<double>(now - log_ns) * 1e-9;
             NXLOG_I(kTag, "frame pump %.1f Hz, new stereo pairs %.1f/s, mode %s, image age %.1f ms", (st.frames_ended - last_frames) / seconds,
                     (st.pairs_published - last_pairs) / seconds, panel_mode ? "panel" : "world", st.published_ns ? (now - st.published_ns) * 1e-6 : 0.0);

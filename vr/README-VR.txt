@@ -1,13 +1,13 @@
-PokopiaVR test 8
+PokopiaVR test 9
 
 Start Virtual Desktop on the Quest, connect to this PC, then start SteamVR.
 Run PlayVR.bat beside pkp.exe. The dedicated VR controls profile is controls-vr.ini.
 Start at 72 Hz in Virtual Desktop. Keep the current SteamVR OpenXR runtime for this comparison.
 
 Changes
-  Independent headset frame pump; the last complete stereo pair is reprojected during a slow game frame.
-  Each eye retains its actual render pose; queued frames cannot overwrite tracking metadata.
-  Vulkan commands are submitted before OpenXR receives the eye image.
+  Independent headset frame pump on a separate GPU queue; the last complete stereo pair is reprojected during a slow game frame.
+  Eyes advance on camera updates, not extra presentations. Each eye retains its actual render pose; queued frames cannot overwrite tracking metadata.
+  Timeline semaphores carry staged images between the game and headset queues without holding the game queue during OpenXR calls.
   Brief missing camera updates keep the world in stereo instead of switching to a flat panel.
   First person is anchored to the player's position, with headset movement relative to the initial head centre.
   Right-controller tracking aims abilities; head aim is the fallback when controller tracking is unavailable.

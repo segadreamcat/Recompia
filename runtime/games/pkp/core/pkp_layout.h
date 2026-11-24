@@ -8,6 +8,8 @@
 namespace nxrt::games::pkp::layout {
 
 // ---- globals in main (qword pointers) ----
+constexpr uint64_t kCameraManager = 0x3561948;   // camera manager; camera aim and the VR render view
+constexpr uint64_t kFollowCamera = 0x10, kActiveCameraTable = 0xc58, kActiveCameraIndex = 0xcc8;
 constexpr uint64_t kPlayerManager = 0x3561928;   // the player manager (26344 bytes, made in 0x71000ae380)
 constexpr uint64_t kManagerPlayer = 0x30;        // player manager: the local player's character (+0x38 the second one)
 constexpr uint64_t kSaveRoot = 0x3561930;        // the save data (the save/options block)

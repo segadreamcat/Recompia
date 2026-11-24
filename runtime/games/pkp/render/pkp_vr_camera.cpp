@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PokopiaVR camera: the player's render view put at the character's eyes and turned by the headset, one eye per game frame (nxrt/xr.h).
+// PokopiaVR camera: the player's render view put at the character's eyes and turned by the headset, one eye per camera update (nxrt/xr.h).
 //
 // Two hooks, both on sites the game build already has (no Set up again):
 //   view   0x7100088e04 (pkp_shoulder_camera.cpp has the details): the follow camera's view block (x20) right before its view matrix is
@@ -104,6 +104,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     const uint64_t view = c->x[20];
     if (!guest::ok(view, kBlockBytes)) return 0;
     xr::EyeView e = xr::eye_view();
+    const xr::EyeView raw_eye = e;
     if (e.valid && xr::mirror_x()) {   // [vr] mirror_x: a left-handed world
         e.pos[0] = -e.pos[0];
         e.quat[1] = -e.quat[1], e.quat[2] = -e.quat[2];
@@ -192,7 +193,7 @@ int hook_view(::Ctx* c, uint64_t, void*) {
     g.valid = true;
     g.eye = e;
     g.eye_in_view.store(e.eye, std::memory_order_release);
-    xr::note_world_view();
+    xr::note_world_view(raw_eye);
     // camera aim casts its ray from the follow camera's eye plus this offset (pkp_view_offset.h)
     view_offset::set(0, eye.x - g.game[0], eye.y - g.game[1], eye.z - g.game[2]);
     {   // the field of view the picture gets, as far as known now (the projection hook refines it): last frame's projection of this view
@@ -256,6 +257,18 @@ int hook_proj(::Ctx* c, uint64_t, void*) {
     return 0;
 }
 
+// Reuse the established active-follow-camera layout from camera aim. Camera hooks can update less often than presents.
+void game_frame(::Ctx*) {
+    const uint64_t manager = guest::deref(g.base + layout::kCameraManager);
+    bool world = false;
+    if (guest::ok(manager, layout::kActiveCameraIndex + 1)) {
+        const int8_t index = rd<int8_t>(manager + layout::kActiveCameraIndex);
+        if (index >= 0) world = guest::deref(manager + layout::kActiveCameraTable + static_cast<uint64_t>(index) * 8) == manager + layout::kFollowCamera;
+    }
+    xr::set_world_active(world);
+    if (!world) g.eye_in_view.store(-1, std::memory_order_relaxed);
+}
+
 void install(const FeatureInstall& in) {
     g.base = in.base;
     in.hooks.add_mid(in.base + kViewWrite, &hook_view);
@@ -265,6 +278,7 @@ void install(const FeatureInstall& in) {
 }
 
 void remove() {
+    xr::set_world_active(false);
     view_offset::set(0, 0, 0, 0);
     g.valid = false;
     g.latched = g.origin_valid = false;
@@ -290,6 +304,6 @@ bool vr_camera::aim_ray(float eye[3], float direction[3]) {
     return true;
 }
 
-const Feature kVrCameraFeature = {.name = "vr_camera", .install = &install, .remove = &remove, .status_text = &status_text};
+const Feature kVrCameraFeature = {.name = "vr_camera", .install = &install, .remove = &remove, .game_frame = &game_frame, .status_text = &status_text};
 
 }  // namespace nxrt::games::pkp
