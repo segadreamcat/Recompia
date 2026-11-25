@@ -38,6 +38,20 @@ void game_frame(::Ctx* c) {
     if (!state || !guest::ok(state + kPermissions, 4) || !guest::rd<uint32_t>(state + kPermissions)) {
         g_done = false;   // the title or a load: apply again once the world is back
         g_next = kFirstId;
+        // At the title the save is read in well before the world starts; turning the bits on then means the world is built with
+        // every ability in place (a move list made when the stage starts sees them). Only once a save is there (some bit already on).
+        const uint64_t root = guest::deref(g_base + layout::kSaveRoot);
+        if (root && guest::ok(root + layout::kSaveAbilities, 0x20)) {
+            uint8_t* bits = reinterpret_cast<uint8_t*>(root + layout::kSaveAbilities);
+            bool any = false;
+            for (int i = 0; i < 0x20; ++i) any |= bits[i] != 0;
+            unsigned added = 0;
+            for (uint32_t id = kFirstId; any && id <= kLastId; ++id) {
+                const uint8_t bit = static_cast<uint8_t>(1u << (id & 7));
+                if (!(bits[id >> 3] & bit)) bits[id >> 3] |= bit, ++added;
+            }
+            if (added) NXLOG_I("vr", "test_unlock_all: %u abilities turned on in the save read in at the title", added);
+        }
         return;
     }
     if (g_done) return;
