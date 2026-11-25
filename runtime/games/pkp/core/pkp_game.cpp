@@ -36,6 +36,7 @@
 #include "render/pkp_vr_avatar.h"
 #include "render/pkp_vr_hands.h"
 #include "render/pkp_vr_petting.h"
+#include "core/pkp_vr_unlock.h"
 #include "input/pkp_vr_controls.h"
 #include "ui/pkp_sort.h"
 #include "ui/pkp_box_tabs.h"
@@ -114,7 +115,7 @@ constexpr Entry kEntries[] = {
     port(&kTaaProbeFeature),
 #endif
     port(&kShoulderCameraFeature),
-    port(&kVrControlsFeature), port(&kVrAvatarFeature), port(&kVrCameraFeature), port(&kVrHandsFeature), port(&kVrPettingFeature),   // PokopiaVR: after the shoulder camera, so the headset's view is the one in the block
+    port(&kVrControlsFeature), port(&kVrAvatarFeature), port(&kVrCameraFeature), port(&kVrHandsFeature), port(&kVrPettingFeature), port(&kVrUnlockFeature),   // PokopiaVR: after the shoulder camera, so the headset's view is the one in the block
     mod(&kJumpFeature, JumpMomentum), mod(&kAimFeature, CameraAim), port(&kAimDebugFeature), mod(&kTitleFeature, TitleQuit), mod(&kSortFeature, InventorySort),
     mod(&kBoxTabsFeature, BoxTabs),   // shares Sort's screen frame; both hooks let the game frame run
     mod(&kCraftFeature, CraftSearch), mod(&kItemEditFeature, ItemEditor), mod(&kPokemonCapFeature, PokemonCap), mod(&kSaveNowFeature, SaveNow),
