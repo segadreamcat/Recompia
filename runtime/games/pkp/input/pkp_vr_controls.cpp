@@ -54,7 +54,11 @@ void game_frame(::Ctx*) {
         notices::post("vr-view", first ? "VR: first person" : "VR: third person", 2);
         NXLOG_I("vr", "perspective: %s", first ? "first person" : "third person");
     }
-    if (commands & xr::kScreenshot) capture();
+    if (commands & xr::kScreenshot) {   // a buzz in the left hand says the shot was taken
+        NXLOG_I("vr", "screenshot shortcut");
+        xr::haptic(0, .6f, .08f);
+        capture();
+    }
     const uint64_t now = qpc::now_ns();
     if (!g.pending.empty() && g.eye && xr::eye_shot_state() == 3) {   // no headset eye image came: take the flat picture instead
         g.eye = false;

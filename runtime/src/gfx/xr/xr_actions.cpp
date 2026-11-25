@@ -169,10 +169,10 @@ void read_actions() {
     const uint64_t now = qpc::now_ns();
     if (lc && !st.left_click_was) { st.left_click_ns = now; st.left_click_used = false; }
     if (rc && !st.right_click_was) { st.right_click_ns = now; st.right_click_used = false; }
-    if (lc && (rc || std::fabs(l.x) > .5f || std::fabs(l.y) > .5f)) st.left_click_used = true;
+    if (lc && (rc || std::fabs(l.x) > .75f || std::fabs(l.y) > .75f)) st.left_click_used = true;
     if (lc && rc) st.right_click_used = true;
     if (st.shortcuts_enabled.load(std::memory_order_relaxed)) {
-        if (!lc && st.left_click_was && !st.left_click_used && now-st.left_click_ns < 450000000ull)
+        if (!lc && st.left_click_was && !st.left_click_used && now-st.left_click_ns < 800000000ull)
             st.commands.fetch_or(kScreenshot, std::memory_order_relaxed);
         if (!rc && st.right_click_was && !st.right_click_used && now-st.right_click_ns < 450000000ull)
             st.commands.fetch_or(kTogglePerspective, std::memory_order_relaxed);
