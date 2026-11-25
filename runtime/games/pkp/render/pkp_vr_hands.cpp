@@ -2,6 +2,7 @@
 // First-person view models and wrist interaction. Native character animation
 // and gameplay remain authoritative.
 #include "render/pkp_vr_hands.h"
+#include "render/pkp_vr_glove_mesh.inc"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -9,6 +10,7 @@
 #include "nxrt/input_source.h"
 #include "nxrt/log.h"
 #include "nxrt/qpc.h"
+#include "nxrt/config.h"
 #include "nxrt/xr.h"
 #include "nxrt/ui_layer.h"
 #include "ui/pkp_menu.h"
@@ -41,7 +43,7 @@ V rotate(const float *q, V v) {
 struct Color {
     float r, g, b;
 };
-constexpr Color purple{.60f, .25f, .82f}, green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
+constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
     std::atomic<bool> playing{false};
@@ -92,35 +94,51 @@ void ball(const xr::EyeView &pose, V center, V radius, Color color) {
             triangle(point(y, x), point(y + 1, x + 1), point(y, x + 1), c);
         }
 }
-void hand(const xr::HandView &h, int side, const xr::EyeView &head) {
-    auto pose = h.grip;
-    // OpenXR grip X is the palm normal, Y runs toward the wrist, and -Z runs from little finger toward thumb.
-    // Orient the view model's finger/forearm axis to grip Y; the back of the left hand is grip -X.
-    const float bone[4] = {-.5f, side ? -.5f : .5f, side ? -.5f : .5f, .5f};
-    const float* q=h.grip.quat;
-    pose.quat[0]=q[3]*bone[0]+q[0]*bone[3]+q[1]*bone[2]-q[2]*bone[1];
-    pose.quat[1]=q[3]*bone[1]-q[0]*bone[2]+q[1]*bone[3]+q[2]*bone[0];
-    pose.quat[2]=q[3]*bone[2]+q[0]*bone[1]-q[1]*bone[0]+q[2]*bone[3];
-    pose.quat[3]=q[3]*bone[3]-q[0]*bone[0]-q[1]*bone[1]-q[2]*bone[2];
-    const float sign = side ? 1.f : -1.f;
-    V head_forward = rotate(head.quat, {0, 0, -1});
-    head_forward.y = 0;
-    head_forward = norm(head_forward);
-    const V right{-head_forward.z, 0, head_forward.x};
-    const V shoulder = vec(head.center) + right * (sign * .19f) + V{0, -.24f, 0} + head_forward * -.07f;
-    const V wrist = vec(pose.pos) + rotate(h.grip.quat, {0, .065f, 0});
-    V elbow = (shoulder + wrist) * .5f + right * (sign * .09f) + V{0, -.13f, .05f};
-    // Soft arms stretch with room-scale reach; no movement or collision is
-    // applied to the native character.
-    tube(shoulder, elbow, .052f, .043f, purple);
-    tube(elbow, wrist, .043f, .033f, purple);
-    ball(pose, {0, -.008f, -.015f}, {.042f, .026f, .058f}, purple);
-    for (int i = 0; i < 4; ++i) {
-        float curl = std::clamp(i == 0 ? h.trigger : h.squeeze, 0.f, 1.f);
-        float x = (-.027f + i * .018f) * sign;
-        ball(pose, {x, -.009f - .019f * curl, -.071f + .025f * curl}, {.011f, .012f, .030f - .010f * curl}, purple);
+// The character's purple, as the game draws it (sRGB 184, 134, 212), in the linear space the eye images are written in.
+constexpr Color kDitto{.479f, .238f, .658f};
+// [vr] hand_size: wrist to fingertip in metres.
+float hand_size() {
+    static const float v = static_cast<float>(std::clamp(nxrt::config_get_double("vr", "hand_size", 0.19), 0.08, 0.40));
+    return v;
+}
+// A cartoon glove on a tracked controller: the aim pose orients it (fingers along the pointing ray, back of the hand up), the grip pose
+// places the palm on the handle. Trigger or grip closes the fingers about the knuckle line. Lit once per frame from above.
+void glove(const xr::HandView &h, int side) {
+    const xr::EyeView &orient = h.aim.valid ? h.aim : h.grip;
+    const vr_glove::Mesh &mesh = side ? vr_glove::kRight : vr_glove::kLeft;
+    const float size = hand_size(), close = std::clamp(std::max(h.trigger, h.squeeze), 0.f, 1.f) * 1.4f;
+    constexpr float kKnuckle = .47f;
+    const V origin = vec(h.grip.pos) + rotate(orient.quat, V{0, .02f, .30f * size});
+    const V light = norm(V{-.4f, 1, .3f});
+    auto &s = g.scene;
+    if (s.count + mesh.index_count > xr::SpatialScene::kMaxVertices)
+        return;
+    V world[1024];
+    Color shade[1024];
+    const uint32_t n = std::min<uint32_t>(mesh.vertex_count, 1024);
+    for (uint32_t i = 0; i < n; ++i) {
+        const auto &v = mesh.vertices[i];
+        V p{v.pos[0], v.pos[1], v.pos[2]}, nrm{v.normal[0], v.normal[1], v.normal[2]};
+        if (v.curl > 0 && close > 0) {   // fingers fold toward the palm (+Z) about the knuckle line
+            const float a = close * v.curl, c = std::cos(a), sn = std::sin(a), y = p.y - kKnuckle;
+            p = {p.x, kKnuckle + y * c - p.z * sn, y * sn + p.z * c};
+            nrm = {nrm.x, nrm.y * c - nrm.z * sn, nrm.y * sn + nrm.z * c};
+        }
+        // hand-local to the aim pose: X -> -X, fingers +Y -> -Z (forward), palm +Z -> -Y (down)
+        world[i] = origin + rotate(orient.quat, V{-p.x, -p.z, -p.y} * size);
+        const V wn = rotate(orient.quat, V{-nrm.x, -nrm.z, -nrm.y});
+        const float lit = v.shade * (.55f + .55f * std::max(0.f, dot(wn, light)));
+        shade[i] = {kDitto.r * lit, kDitto.g * lit, kDitto.b * lit};
     }
-    ball(pose, {-sign * .043f, -.013f, -.026f}, {.017f, .018f, .029f}, purple);
+    for (uint32_t t = 0; t + 2 < mesh.index_count; t += 3) {
+        const uint16_t a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
+        if (a >= n || b >= n || c >= n)
+            continue;
+        for (uint16_t k : {a, b, c}) {
+            auto &out = s.vertices[s.count++];
+            out = {{world[k].x, world[k].y, world[k].z}, {shade[k].r, shade[k].g, shade[k].b, 1}, {0, 0}, 0};
+        }
+    }
 }
 struct Watch {
     V center, right, up, normal;
@@ -185,9 +203,9 @@ void game_frame(::Ctx *) {
     }
     if (settings::get_bool(settings::Key::VrHands)) {
         if (left.grip.valid)
-            hand(left, 0, head);
+            glove(left, 0);
         if (right.grip.valid)
-            hand(right, 1, head);
+            glove(right, 1);
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left.grip.valid;
     bool within_reach = false;

@@ -49,7 +49,7 @@ void haptic(int hand, float amplitude, float seconds);
 void spatial_input(uint64_t buttons, uint64_t capture, uint64_t until_ns);
 struct SpatialVertex { float pos[3], color[4], uv[2]; float picture = 0; };
 struct SpatialScene {
-    static constexpr uint32_t kMaxVertices = 8190;
+    static constexpr uint32_t kMaxVertices = 16380;   // two gloves (~10200) plus the wrist display and vine
     SpatialVertex vertices[kMaxVertices];
     uint32_t count = 0;
     // Optional live picture region, normalised top-left UVs of the presented image. Used only by picture vertices.

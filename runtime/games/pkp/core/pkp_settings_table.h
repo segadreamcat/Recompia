@@ -77,7 +77,7 @@ inline constexpr Spec kSpecs[] = {
     live(b(VrShortcuts, "vr_shortcuts", true, "VR shortcuts: right-stick click/F11 changes view; short left-stick click/F12 captures a screenshot.")),
     live(d(VrSharpness, "vr_sharpness", 0.0, 0.0, 1.0, "Contrast-adaptive sharpening of the headset world image, 0 off to 1 strongest; independent of desktop upscaling.")),
     live(b(VrPetting, "vr_petting", true, "Gentle controller rumble when stroking a nearby creature with a tracked hand.")),
-    live(b(VrHands, "vr_hands", true, "Tracked purple hands and arms in first-person VR.")),
+    live(b(VrHands, "vr_hands", true, "Tracked purple cartoon gloves in first-person VR.")),
     live(b(VrWrist, "vr_wrist", true, "Show the selected move on a tracked wrist display; hold the right trigger near the face and swipe to select moves.")),
     live(b(VrWhipCast, "vr_whip_cast", false, "Hold right grip, pull back and whip forward to cast the selected move. The ordinary trigger still works.")),
     live(d(VrHudScale, "vr_hud_scale", 1.0, 0.35, 1.0, "HUD size inside VR eye images; 0.55 keeps edge widgets in the binocular visible area, 1 keeps the native layout.")),
