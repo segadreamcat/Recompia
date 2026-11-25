@@ -6,8 +6,6 @@
 #include "core/pkp_settings.h"
 #include "ui/pkp_menu.h"
 #include "nxrt/qpc.h"
-#include "nxrt/key_state.h"
-#include "nxrt/log.h"
 #include "nxrt/xr.h"
 #include <algorithm>
 #include <atomic>
@@ -58,7 +56,6 @@ void game_frame(::Ctx *c) {
             g.previous_valid[hand] = false;
             continue;
         }
-        if(key_state::down_by_name("F9")&&g.count){for(int j=0;j<3;++j)point[j]=g.actors[0].position[j];point[1]+=65.f;}
         uint64_t contact = 0;
         float nearest = 1e9f;
         for (size_t i = 0; i < g.count; ++i) {
@@ -81,7 +78,6 @@ void game_frame(::Ctx *c) {
         if (contact && now - g.feedback[hand] > 160000000ull &&
             (contact != g.touching[hand] || (g.previous_valid[hand] && moved > .0001f)) && pose.trigger < .2f && pose.squeeze < .5f) {
             for (int j=0; j<3; ++j) g.previous[hand][j]=pose.grip.pos[j];
-            NXLOG_I("vr","diagnostic pet contact hand %d actor 0x%llx at %.0f %.0f %.0f",hand,static_cast<unsigned long long>(contact),point[0],point[1],point[2]);
             xr::haptic(hand, .13f, .035f);
             g.feedback[hand] = now;
         }

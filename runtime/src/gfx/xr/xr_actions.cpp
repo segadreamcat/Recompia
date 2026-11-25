@@ -148,7 +148,7 @@ void read_actions() {
             XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action = st.vibration[h];
             XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION}; vibration.amplitude = amplitude;
             vibration.duration = static_cast<XrDuration>(st.haptic_seconds[h].load() * 1e9); vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
-            NXLOG_I("vr","diagnostic haptic hand %d amplitude %.2f result %d",h,amplitude,st.f.ApplyHapticFeedback(st.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration)));
+            st.f.ApplyHapticFeedback(st.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
         }
     }
     uint64_t btns = 0;

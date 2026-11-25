@@ -263,12 +263,6 @@ void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFo
     if(background_rect){excluded=*background_rect;excluded.offset.x-=x;
         excluded.offset.y=flip_y?y+static_cast<int32_t>(h)-background_rect->offset.y-static_cast<int32_t>(excluded.extent.height):background_rect->offset.y-y;}
     spatial_render(device, cb, slot, eye, image, tag, background, excluded, flip_y);
-    if(tag.world){
-        barrier(cb,source,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-        VkImageBlit mirror{};mirror.srcSubresource=mirror.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};mirror.srcOffsets[1]={static_cast<int32_t>(w),static_cast<int32_t>(h),1};mirror.dstOffsets[0]={x,flip_y?y+static_cast<int32_t>(h):y,0};mirror.dstOffsets[1]={x+static_cast<int32_t>(w),flip_y?y:y+static_cast<int32_t>(h),1};
-        vkCmdBlitImage(cb,image.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&mirror,VK_FILTER_NEAREST);
-        barrier(cb,source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
-    }
     st.capture_stage = slot; st.capture_eye = eye; st.capture_tag = tag;
 }
 
@@ -286,7 +280,7 @@ void render_after_submit() {
     Stage& stage = st.stages[st.capture_stage]; const int eye = st.capture_eye;
     stage.ready_value = ready; stage.written[eye] = true; stage.tags[eye] = st.capture_tag;
     if (!stage.world || (stage.written[0] && stage.written[1])) {
-        stage.state = ImageState::Free;
+        stage.state = ImageState::Ready;
         if (stage.world) { st.captured_frame = stage.frame; st.writing_stage = -1; }
     }
     st.capture_stage = st.capture_eye = -1;
