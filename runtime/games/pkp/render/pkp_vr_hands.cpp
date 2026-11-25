@@ -205,10 +205,10 @@ Watch watch_pose(const HandFrame &f, int side) {
     w.normal = norm(hand_dir(f, {0, 0, -1}));
     return w;
 }
-void band(const HandFrame &f, int side, float width) {
+void band(const HandFrame &f, int side, float width, float grow = 1.08f) {
     const Color band{.05f, .05f, .07f};
     constexpr int kBand = 24;
-    const float half = width * .5f / f.size, grow = 1.08f;
+    const float half = width * .5f / f.size;
     for (int i = 0; i < kBand; ++i) {
         const float a = 2 * kPi * i / kBand, b = 2 * kPi * (i + 1) / kBand;
         auto at = [&](float t, float dy) {
@@ -248,11 +248,11 @@ void watch(const HandFrame &f, const Watch &w, bool touched) {
 // The right wrist band with the Nearby Habitats box wrapped along it, reading left to right across the back of the wrist (thumb side to
 // little finger, top toward the fingers); only the box's own pixels are drawn (picture 2).
 void habitat_band(const HandFrame &f) {
-    const float card_w = vr_value("habitat_card_width", 0.070, 0.03, 0.20);   // along the band, metres
+    const float card_w = vr_value("habitat_card_width", 0.060, 0.03, 0.20);   // along the band, metres
     const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
-    band(f, 1, card_h + .006f);
+    band(f, 1, .016f, 1.01f);   // a slim, snug band; the box sits on it like a screen
     // the band's outer surface at angle t (t = -pi/2 is the back of the wrist; t falls toward -X, the little finger)
-    const float grow = 1.11f, rx = kWristRx * grow, rz = kWristRz * grow;
+    const float grow = 1.05f, rx = kWristRx * grow, rz = kWristRz * grow;
     auto at = [&](float t, float y) { return hand_point(f, {kWristCx[1] + rx * std::cos(t), kWristY + y, kWristCz[1] + rz * std::sin(t)}); };
     // angle for an arc length s (hand units) from the back of the wrist, stepping along the ellipse
     constexpr int kSteps = 16;

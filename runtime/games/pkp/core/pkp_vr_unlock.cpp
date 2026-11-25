@@ -34,7 +34,10 @@ bool g_wheel_done = false;
 // 0x11b; its vfunc 0x38(0) gives the rows, their vfunc 0x30(id) a row whose +8 is a 0x30-byte record) gives each wheel move its slot:
 // record +0x1e is the wheel position 1..8 (0 for the moves the game runs by context, such as Surf), +0x26 the move's own id (0 for
 // the upgraded variants). Water Gun, Leafage, Rock Smash, Cut, Rototiller and the rest, in the game's own wheel order.
+// The wheel also shows a slot only while the player owns that move: a byte per skill id at save root + kOwned + player * 0x3e0, at +0x2e8
+// or +0x325 (which one the game reads depends on its mode), with +0x362 / +0x39f as the other way to count as owned.
 constexpr uint64_t kWheel = 0x6d84ec, kMasterData = 0x35618f0, kSkillTable = 0x8d8;
+constexpr uint64_t kOwned = 0x250c50, kOwnedA = 0x2e8, kOwnedB = 0x325;
 constexpr uint32_t kSkillIds = 60;
 
 // Puts every wheel move the skill table lists on the wheel: in its own slot when that is free, else in a free one.
@@ -57,6 +60,15 @@ void fill_wheel(::Ctx* c, uint64_t root) {
         const uint8_t pos = guest::rd<uint8_t>(rec + 0x1e);
         if (pos >= 1 && pos <= 8 && guest::rd<uint8_t>(rec + 0x26) == id && !want[pos - 1]) want[pos - 1] = static_cast<uint8_t>(id);
     }
+    unsigned owned = 0;
+    for (const uint8_t id : want) {   // player 0, the local player
+        for (const uint64_t at : {root + kOwned + kOwnedA + id, root + kOwned + kOwnedB + id}) {
+            if (!id || !guest::ok(at, 1) || guest::rd<uint8_t>(at)) continue;
+            guest::wr<uint8_t>(at, 1);
+            ++owned;
+        }
+    }
+    if (owned) NXLOG_I("vr", "test_unlock_all: %u move ownership bytes set", owned);
     uint8_t* wheel = reinterpret_cast<uint8_t*>(root + kWheel);
     unsigned added = 0;
     for (int k = 0; k < 8; ++k) {
