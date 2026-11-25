@@ -44,6 +44,9 @@ struct Color {
     float r, g, b;
 };
 constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
+// The character's selected move (skill id, layout of the move wheel's ids); Cut is skill 5 (its action is 883).
+constexpr uint64_t kSelectedSkill = 0x1ec2;
+constexpr uint8_t kCutSkill = 5;
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
     std::atomic<bool> playing{false};
@@ -53,6 +56,10 @@ struct State {
     float swipe_x = 0, pull = 0;
     V previous, vine_origin, vine_direction;
     uint16_t action = 0;
+    uint8_t skill = 0;
+    bool grab_was[2] = {};
+    V swing_prev;
+    uint64_t swing_time = 0, cut_cooldown = 0;
     xr::SpatialScene scene;
 } g;
 void triangle(V a, V b, V c, Color color, float picture = 0, V ua = {}, V ub = {}, V uc = {}) {
@@ -284,6 +291,27 @@ void habitat_band(const HandFrame &f) {
         triangle(tl, br, tr, white, 2, {u0, 0, 0}, {u1, 1, 0}, {u1, 0, 0});
     }
 }
+// Cut: each glove becomes a pale, curved scythe blade (the move borrows Scyther's), from the back of the wrist past the fingertips.
+void blade(const HandFrame &f) {
+    const Color face{.86f, .90f, .74f}, edge{.55f, .66f, .42f}, base{.36f, .52f, .30f};
+    constexpr int kSeg = 12;
+    const float flip = f.side ? 1.f : -1.f;
+    // centre line in hand units: up the fingers (+Y), sweeping out over the back of the hand (-Z) and curving toward the thumb side
+    auto spine = [&](float t) { return V{flip * .10f * t * t, .05f + 1.35f * t, -.10f - .55f * t * t + .35f * t}; };
+    auto width = [&](float t) { return .20f * (1 - t) * (1 - t * .3f) + .015f; };
+    V prev_a{}, prev_b{}, prev_t{};
+    for (int k = 0; k <= kSeg; ++k) {
+        const float t = static_cast<float>(k) / kSeg;
+        const V c = spine(t), w = width(t) > 0 ? V{0, 0, width(t)} : V{};
+        const V a = hand_point(f, c - w * .35f), b = hand_point(f, c + w), mid = hand_point(f, c + V{flip * .03f, 0, w.z * .3f});
+        if (k) {
+            triangle(prev_a, a, prev_t, face), triangle(prev_t, a, mid, face);       // one face, curving through the ridge
+            triangle(prev_t, mid, prev_b, edge), triangle(prev_b, mid, b, edge);      // the cutting side
+        }
+        prev_a = a, prev_b = b, prev_t = mid;
+    }
+    tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
+}
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
     g.pulse_until = now + 120000000ull;
@@ -317,11 +345,16 @@ void game_frame(::Ctx *) {
         g.vine_start = 0;
     }
     const HandFrame left_frame = hand_frame(left, 0), right_frame = hand_frame(right, 1);
+    const uint64_t character = guest::deref(guest::deref(g.base + layout::kPlayerManager) + layout::kManagerPlayer);
+    const uint8_t skill = guest::ok(character + kSelectedSkill, 1) ? guest::rd<uint8_t>(character + kSelectedSkill) : 0;
+    if (skill != g.skill) NXLOG_I("vr", "selected move %u", skill);
+    g.skill = skill;
+    const bool cutting = skill == kCutSkill;
     if (settings::get_bool(settings::Key::VrHands)) {
         if (left_frame.valid)
-            glove(left_frame, left);
+            cutting ? blade(left_frame) : glove(left_frame, left);
         if (right_frame.valid)
-            glove(right_frame, right);
+            cutting ? blade(right_frame) : glove(right_frame, right);
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
@@ -377,6 +410,46 @@ void game_frame(::Ctx *) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
+    // Reach and grab: squeezing a grip with that hand reached out (an arm's length ahead or down toward the ground) picks up, as the
+    // game's pick-up button does; the grip's own button (L or R) is held back while the hand is out there.
+    for (int h = 0; h < 2; ++h) {
+        const xr::HandView &hv = h ? right : left;
+        if (!hv.grip.valid) {
+            g.grab_was[h] = false;
+            continue;
+        }
+        const V rel = vec(hv.grip.pos) - vec(head.center);
+        const float out = std::sqrt(rel.x * rel.x + rel.z * rel.z), down = -rel.y;
+        const bool reached = out > vr_value("grab_reach", 0.42, 0.2, 0.8) || down > vr_value("grab_low", 0.80, 0.4, 1.4);
+        const bool held = hv.squeeze > .65f;
+        if (reached) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+        if (reached && held && !g.grab_was[h] && !cutting) {
+            pulse(hid::btn(hid::kBtnY), now);
+            xr::haptic(h, .25f, .03f);
+            if (h) g.grip_cast = true;   // not a jump on release
+            NXLOG_I("vr", "reach grab: %s hand", h ? "right" : "left");
+        }
+        g.grab_was[h] = held;
+    }
+    // Cut by swinging: with Cut selected, a fast swing of either blade sideways or down uses the move.
+    if (cutting && right.grip.valid) {
+        const V p = vec(right.grip.pos);
+        const double dt = g.swing_time ? static_cast<double>(now - g.swing_time) * 1e-9 : 0;
+        if (dt > .003 && dt < .1 && now >= g.cut_cooldown) {
+            const V v = (p - g.swing_prev) * static_cast<float>(1 / dt);
+            const float speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            if (speed > vr_value("cut_speed", 1.8, 0.8, 5.0)) {
+                pulse(hid::btn(hid::kBtnZR), now);
+                g.cut_cooldown = now + 450000000ull;
+                xr::haptic(1, .35f, .05f);
+                NXLOG_I("vr", "gesture cut: swing %.1f m/s", static_cast<double>(speed));
+            }
+        }
+        g.swing_prev = p;
+        g.swing_time = now;
+    } else {
+        g.swing_time = 0;
+    }
     const uint64_t manager = guest::deref(g.base + layout::kPlayerManager), player = guest::deref(manager + layout::kManagerPlayer),
                    component = guest::deref(player + layout::kAction);
     const uint16_t action = guest::ok(component, layout::kActionId + 2) ? guest::rd<uint16_t>(component + layout::kActionId) : 0;
