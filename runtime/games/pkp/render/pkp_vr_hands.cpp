@@ -50,7 +50,6 @@ constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
 // the wheel's next / previous at 0x2f9030 change it). Cut is skill 5 (its action is 883).
 constexpr uint64_t kSelectedSkill = 0x3950 + 0x1a;
 constexpr uint8_t kCutSkill = 5;
-constexpr size_t kMoveStateBytes = 0x600;
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
     std::atomic<bool> playing{false};
@@ -61,9 +60,10 @@ struct State {
     V previous, vine_origin, vine_direction;
     uint16_t action = 0;
     uint8_t skill = 0;
-    float morph = 0;   // 0 the gloves, 1 the Cut blades; animated between, Ditto style
-    V swing_prev;
-    uint64_t swing_time = 0, cut_cooldown = 0;
+    float morph[2] = {};        // per hand: 0 the glove, 1 the Cut blade; animated between, Ditto style
+    uint64_t raised_until[2] = {};   // a hand counts as raised a little after it comes down, so a swing keeps its blade
+    V swing_prev[2];
+    uint64_t swing_time[2] = {}, cut_cooldown = 0;
     xr::SpatialScene scene;
 } g;
 void triangle(V a, V b, V c, Color color, float picture = 0, V ua = {}, V ub = {}, V uc = {}) {
@@ -365,41 +365,23 @@ void game_frame(::Ctx *c) {
     if (skill != g.skill) NXLOG_I("vr", "selected move %u", skill);
     g.skill = skill;
     const bool cutting = skill == kCutSkill;
-    // Finding the game's "a cuttable thing is in reach" state: while Cut is selected, log which bytes of the move state change
-    // (up to 4 times a second), to compare walking up to a tree and away from it.
-    if (cutting && guest::ok(character + 0x3950, kMoveStateBytes)) {
-        static uint8_t prev[kMoveStateBytes];
-        static bool have = false;
-        static uint64_t next = 0;
-        if (now >= next) {
-            next = now + 250000000ull;
-            uint8_t cur[kMoveStateBytes];
-            std::memcpy(cur, reinterpret_cast<const void*>(character + 0x3950), kMoveStateBytes);
-            if (have) {
-                std::string diff;
-                int shown = 0;
-                for (size_t i = 0; i < kMoveStateBytes && shown < 48; ++i)
-                    if (cur[i] != prev[i]) {
-                        char b[24];
-                        std::snprintf(b, sizeof b, " %zx:%02x>%02x", i, prev[i], cur[i]);
-                        diff += b, ++shown;
-                    }
-                if (!diff.empty()) NXLOG_I("vr", "cut probe:%s", diff.c_str());
-            }
-            std::memcpy(prev, cur, kMoveStateBytes);
-            have = true;
-        }
-    }
-    {   // the morph: the glove melts into a purple blob (first half), the blade grows out of it (second half), about a third of a second
+    {   // the morph: with Cut selected, a hand lifted to about shoulder height (or above) melts into a purple blob and a blade grows
+        // out of it, and back once it has been down a moment; about a third of a second each way
         static uint64_t last = now;
         const float dt = std::min(static_cast<float>(now - last) * 1e-9f, .1f);
         last = now;
-        g.morph = std::clamp(g.morph + (cutting ? dt : -dt) / .35f, 0.f, 1.f);
+        for (int h = 0; h < 2; ++h) {
+            const xr::HandView &hv = h ? right : left;
+            const bool up = hv.grip.valid && hv.grip.pos[1] > head.center[1] - vr_value("claw_raise", 0.30, 0.0, 0.8);
+            if (cutting && up) g.raised_until[h] = now + 600000000ull;
+            const bool claws = cutting && now < g.raised_until[h];
+            g.morph[h] = std::clamp(g.morph[h] + (claws ? dt : -dt) / .35f, 0.f, 1.f);
+        }
     }
     if (settings::get_bool(settings::Key::VrHands)) {
-        const float m = g.morph;
         for (int h = 0; h < 2; ++h) {
             const HandFrame &f = h ? right_frame : left_frame;
+            const float m = g.morph[h];
             if (!f.valid) continue;
             if (m <= 0) {
                 glove(f, h ? right : left);
@@ -470,24 +452,27 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
-    // Cut by swinging: with Cut selected, a fast swing of either blade sideways or down uses the move.
-    if (cutting && right.grip.valid) {
-        const V p = vec(right.grip.pos);
-        const double dt = g.swing_time ? static_cast<double>(now - g.swing_time) * 1e-9 : 0;
+    // Cut by swinging: a fast swing of either hand while it is a blade uses the move.
+    for (int h = 0; h < 2; ++h) {
+        const xr::HandView &hv = h ? right : left;
+        if (!cutting || g.morph[h] < .5f || !hv.grip.valid) {
+            g.swing_time[h] = 0;
+            continue;
+        }
+        const V p = vec(hv.grip.pos);
+        const double dt = g.swing_time[h] ? static_cast<double>(now - g.swing_time[h]) * 1e-9 : 0;
         if (dt > .003 && dt < .1 && now >= g.cut_cooldown) {
-            const V v = (p - g.swing_prev) * static_cast<float>(1 / dt);
+            const V v = (p - g.swing_prev[h]) * static_cast<float>(1 / dt);
             const float speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
             if (speed > vr_value("cut_speed", 1.8, 0.8, 5.0)) {
                 pulse(hid::btn(hid::kBtnZR), now);
                 g.cut_cooldown = now + 450000000ull;
-                xr::haptic(1, .35f, .05f);
-                NXLOG_I("vr", "gesture cut: swing %.1f m/s", static_cast<double>(speed));
+                xr::haptic(h, .35f, .05f);
+                NXLOG_I("vr", "gesture cut: %s swing %.1f m/s", h ? "right" : "left", static_cast<double>(speed));
             }
         }
-        g.swing_prev = p;
-        g.swing_time = now;
-    } else {
-        g.swing_time = 0;
+        g.swing_prev[h] = p;
+        g.swing_time[h] = now;
     }
     const uint64_t manager = guest::deref(g.base + layout::kPlayerManager), player = guest::deref(manager + layout::kManagerPlayer),
                    component = guest::deref(player + layout::kAction);
