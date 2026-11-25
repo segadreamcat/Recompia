@@ -178,80 +178,84 @@ V index_tip(const HandFrame &f, float trigger) {
     const float a = std::clamp(trigger, 0.f, 1.f) * 1.4f, c = std::cos(a), sn = std::sin(a), y = p.y - .47f;
     return hand_point(f, {p.x, .47f + y * c - p.z * sn, y * sn + p.z * c});
 }
-// A square smartwatch on the back of the left glove's wrist: a band around the wrist, a rounded case and a dark screen with the native move
-// wheel on it; the native "Nearby Habitats" box floats just past the watch. Face axes: right toward the fingers, up toward the little
-// finger (across the wrist, the long side), normal out of the back of the hand (readable with the forearm across the body).
+// Wrist gear on the back of each glove's wrist. Left: a round smartwatch with a Poke Ball bezel (red top half, white bottom half, a black
+// seam) and the native move wheel on its face. Right: a plain band carrying the native "Nearby Habitats" box. Face axes: right along the
+// forearm (toward the fingers on the left wrist, toward the elbow on the right, so both read with the arm across the body), up across
+// the wrist, normal out of the back of the hand.
 struct Watch {
     V center, right, up, normal;
-    float half_w = .0175f, half_h = .0205f;   // case half-sizes along right and up
+    float radius = .017f;   // face radius; the bezel ring goes out to radius * kBezel
 };
-// [vr] watch_size: the case's long side in metres (an Apple Watch is about 0.041).
-float watch_size() { static const float v = vr_value("watch_size", 0.041, 0.020, 0.090); return v; }
-// Wrist cross-section of the left glove, hand-local units: centre and half-widths across (X) and through (Z) the wrist.
-constexpr float kWristY = .05f, kWristCx = -.044f, kWristCz = -.005f, kWristRx = .25f, kWristRz = .20f;
+constexpr float kBezel = 1.25f;
+// [vr] watch_size: the watch's outer diameter, bezel included, in metres.
+float watch_size() { static const float v = vr_value("watch_size", 0.042, 0.020, 0.090); return v; }
+// Wrist cross-section of each glove, hand-local units: centre and half-widths across (X) and through (Z) the wrist.
+constexpr float kWristY = .05f, kWristRx = .25f, kWristRz = .20f;
+constexpr float kWristCx[2] = {-.044f, .046f}, kWristCz[2] = {-.004f, -.0065f};
 // Native HUD rects (x, y, w, h of the 16:9 HUD in the square picture, before the VR HUD inset): the move wheel and the Nearby Habitats box.
 constexpr float kWheelRect[] = {.80f, .65f, .19f, .16f}, kHabitatRect[] = {.0f, .27f, .28f, .15f};
-Watch watch_pose(const HandFrame &f) {
+Watch watch_pose(const HandFrame &f, int side) {
     Watch w;
-    w.half_h = watch_size() * .5f;
-    w.half_w = w.half_h * .85f;
-    const float lift = .012f / f.size;   // the case sits on the band, just off the back of the wrist
-    w.center = hand_point(f, {kWristCx, kWristY, kWristCz - kWristRz - lift});
-    w.right = norm(hand_dir(f, {0, 1, 0}));
-    w.up = norm(hand_dir(f, {1, 0, 0}));
+    w.radius = watch_size() * .5f / kBezel;
+    const float lift = .010f / f.size;   // the case sits on the band, just off the back of the wrist
+    w.center = hand_point(f, {kWristCx[side], kWristY, kWristCz[side] - kWristRz - lift});
+    const float flip = side ? -1.f : 1.f;
+    w.right = norm(hand_dir(f, {0, flip, 0}));
+    w.up = norm(hand_dir(f, {flip, 0, 0}));
     w.normal = norm(hand_dir(f, {0, 0, -1}));
     return w;
 }
-// A rounded rectangle in the face plane, as a fan; picture != 0 maps it onto that live picture (u right, v down).
-void rounded(const Watch &w, V center, float hw, float hh, float corner, Color color, float picture = 0) {
-    constexpr int kArc = 6;
-    V ring[4 * (kArc + 1)];
-    int n = 0;
-    const float cx[] = {hw - corner, -(hw - corner), -(hw - corner), hw - corner}, cy[] = {hh - corner, hh - corner, -(hh - corner), -(hh - corner)};
-    for (int q = 0; q < 4; ++q)
-        for (int k = 0; k <= kArc; ++k) {
-            const float a = (q + static_cast<float>(k) / kArc) * kPi * .5f;
-            ring[n++] = {cx[q] + corner * std::cos(a), cy[q] + corner * std::sin(a), 0};
-        }
-    auto at = [&](V p) { return center + w.right * p.x + w.up * p.y; };
-    auto uv = [&](V p) { return V{.5f + p.x / (2 * hw), .5f - p.y / (2 * hh), 0}; };
-    for (int i = 0; i < n; ++i) {
-        const V a = ring[i], b = ring[(i + 1) % n];
-        triangle(at({}), at(a), at(b), color, picture, uv({}), uv(a), uv(b));
-    }
-}
-void watch(const HandFrame &f, const Watch &w, bool touched, bool habitats) {
-    const Color band{.05f, .05f, .07f}, bezel{.12f, .12f, .14f}, screen{.01f, .01f, .012f}, white{1, 1, 1};
-    // band: an elliptical strip around the wrist, slightly outside the glove
+void band(const HandFrame &f, int side, float width) {
+    const Color band{.05f, .05f, .07f};
     constexpr int kBand = 24;
-    const float half = w.half_w * .9f / f.size, grow = 1.08f;
+    const float half = width * .5f / f.size, grow = 1.08f;
     for (int i = 0; i < kBand; ++i) {
         const float a = 2 * kPi * i / kBand, b = 2 * kPi * (i + 1) / kBand;
         auto at = [&](float t, float dy) {
-            return hand_point(f, {kWristCx + kWristRx * grow * std::cos(t), kWristY + dy, kWristCz + kWristRz * grow * std::sin(t)});
+            return hand_point(f, {kWristCx[side] + kWristRx * grow * std::cos(t), kWristY + dy, kWristCz[side] + kWristRz * grow * std::sin(t)});
         };
         const float light = .7f + .3f * std::max(0.f, -std::sin(a));
         const Color col{band.r * light, band.g * light, band.b * light};
         triangle(at(a, -half), at(b, -half), at(b, half), col);
         triangle(at(a, -half), at(b, half), at(a, half), col);
     }
-    // case: back plate, rounded front, then the screen and the wheel on it
-    const float corner = w.half_w * .42f;
-    rounded(w, w.center - w.normal * .007f, w.half_w, w.half_h, corner, bezel);
-    rounded(w, w.center, w.half_w, w.half_h, corner, bezel);
-    const float sw = w.half_w * .86f, sh = w.half_h * .88f;
-    rounded(w, w.center + w.normal * .0004f, sw, sh, corner * .8f, screen);
-    const float wheel_h = std::min(sh, sw / 1.19f);
-    rounded(w, w.center + w.normal * .0008f, sw, wheel_h, corner * .5f, white, 1);
-    if (touched)   // a small light at the edge while a finger is on the screen
-        ball(xr::EyeView{}, w.center + w.up * (sh * .85f) + w.normal * .002f, {.002f, .002f, .002f}, green);
-    // the Nearby Habitats box, floating past the 12 o'clock side; only the box's own pixels are drawn (picture 2)
-    if (habitats) {
-        const float card_w = vr_value("habitat_card_width", 0.075, 0.03, 0.20) * .5f;
-        const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
-        const V at = w.center + w.normal * .012f + w.up * (w.half_h + card_h + .006f);
-        rounded(w, at, card_w, card_h, .001f, white, 2);
+}
+void watch(const HandFrame &f, const Watch &w, bool touched) {
+    const Color red{.80f, .03f, .03f}, white{.92f, .92f, .92f}, black{.02f, .02f, .02f}, side_col{.06f, .06f, .07f}, face{1, 1, 1};
+    band(f, 0, .018f);
+    const float outer = w.radius * kBezel, seam = w.radius * .05f;
+    tube(w.center - w.normal * .006f, w.center, outer, outer, side_col, false);
+    constexpr int kRing = 48;
+    const V z = w.normal * .0005f;
+    for (int i = 0; i < kRing; ++i) {
+        const float a = 2 * kPi * i / kRing, b = 2 * kPi * (i + 1) / kRing;
+        const V p = w.right * std::cos(a) + w.up * std::sin(a), q = w.right * std::cos(b) + w.up * std::sin(b);
+        const Color ring = std::sin(a + kPi / kRing) >= 0 ? red : white;   // top half red, bottom half white
+        triangle(w.center + p * outer, w.center + q * outer, w.center + q * w.radius, ring);
+        triangle(w.center + p * outer, w.center + q * w.radius, w.center + p * w.radius, ring);
+        triangle(w.center + z, w.center + p * w.radius + z, w.center + q * w.radius + z, face, 1, {.5f, .5f, 0},
+                 {.5f + .5f * std::cos(a), .5f - .5f * std::sin(a), 0}, {.5f + .5f * std::cos(b), .5f - .5f * std::sin(b), 0});
     }
+    // the black seam across the bezel, on both sides of the face
+    for (const float s : {1.f, -1.f}) {
+        const V in = w.center + w.right * (s * w.radius) + z * .5f, out = w.center + w.right * (s * outer) + z * .5f;
+        triangle(in - w.up * seam, out - w.up * seam, out + w.up * seam, black);
+        triangle(in - w.up * seam, out + w.up * seam, in + w.up * seam, black);
+    }
+    if (touched)   // a small light at the edge while a finger is on the face
+        ball(xr::EyeView{}, w.center + w.up * (w.radius * .8f) + w.normal * .002f, {.003f, .003f, .003f}, green);
+}
+// The right wrist band with the Nearby Habitats box lying on it; only the box's own pixels are drawn (picture 2).
+void habitat_band(const HandFrame &f, const Watch &w) {
+    band(f, 1, .022f);
+    const float card_w = vr_value("habitat_card_width", 0.060, 0.03, 0.20) * .5f;
+    const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
+    const V c = w.center + w.normal * .001f;
+    const V tl = c - w.right * card_w + w.up * card_h, tr = c + w.right * card_w + w.up * card_h;
+    const V bl = c - w.right * card_w - w.up * card_h, br = c + w.right * card_w - w.up * card_h;
+    const Color white{1, 1, 1};
+    triangle(tl, bl, br, white, 2, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
+    triangle(tl, br, tr, white, 2, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
 }
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
@@ -293,11 +297,26 @@ void game_frame(::Ctx *) {
             glove(right_frame, right);
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
+    const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
+    std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
+    // the HUD rects in the square render, moved by the user's whole-HUD inset; a rect is lifted only while its wrist is drawn
+    const auto lift = [&](int k, const float *native) {
+        const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
+        float *r = g.scene.picture_rect + 4 * k;
+        r[0] = .5f + (native[0] - .5f) * scale;
+        r[1] = .5f + (native[1] - .5f) * scale;
+        r[2] = native[2] * scale;
+        r[3] = native[3] * scale;
+    };
+    if (habitats) {
+        habitat_band(right_frame, watch_pose(right_frame, 1));
+        lift(1, kHabitatRect);
+    }
     Watch w{};
     if (wrist) {
         // Smartwatch scrolling: rest the right index fingertip on the face and slide it toward the fingers (next move) or the elbow
         // (previous move); every 2 cm of slide is one step, with a tick on the right controller.
-        w = watch_pose(left_frame);
+        w = watch_pose(left_frame, 0);
         bool on_face = false;
         float x = 0;
         if (right_frame.valid) {
@@ -305,7 +324,7 @@ void game_frame(::Ctx *) {
             const float depth = dot(delta, w.normal);
             x = dot(delta, w.right);
             const float y = dot(delta, w.up);
-            on_face = depth > -.015f && depth < .025f && std::fabs(x) < w.half_w * 1.5f && std::fabs(y) < w.half_h * 1.5f &&
+            on_face = depth > -.015f && depth < .025f && x * x + y * y < (w.radius * 1.7f) * (w.radius * 1.7f) &&
                       dot(w.normal, norm(vec(head.center) - w.center)) > .1f;
         }
         if (on_face && !g.touching) {
@@ -325,17 +344,8 @@ void game_frame(::Ctx *) {
             xr::haptic(1, .12f, .02f);
             NXLOG_I("vr", "wrist swipe: %s", next ? "next move" : "previous move");
         }
-        watch(left_frame, w, g.touching, true);
-        // the HUD rects in the square render, moved by the user's whole-HUD inset
-        const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
-        for (int k = 0; k < 2; ++k) {
-            const float *native = k ? kHabitatRect : kWheelRect;
-            float *r = g.scene.picture_rect + 4 * k;
-            r[0] = .5f + (native[0] - .5f) * scale;
-            r[1] = .5f + (native[1] - .5f) * scale;
-            r[2] = native[2] * scale;
-            r[3] = native[3] * scale;
-        }
+        watch(left_frame, w, g.touching);
+        lift(0, kWheelRect);
     } else {
         g.touching = false;
     }
