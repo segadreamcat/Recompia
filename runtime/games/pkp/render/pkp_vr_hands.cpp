@@ -297,8 +297,10 @@ void blade(const HandFrame &f) {
     constexpr int kSeg = 12;
     const float flip = f.side ? 1.f : -1.f;
     // centre line in hand units: up the fingers (+Y), sweeping out over the back of the hand (-Z) and curving toward the thumb side
-    auto spine = [&](float t) { return V{flip * .10f * t * t, .05f + 1.35f * t, -.10f - .55f * t * t + .35f * t}; };
-    auto width = [&](float t) { return .20f * (1 - t) * (1 - t * .3f) + .015f; };
+    // [vr] blade_size: how big the blades are against the glove (1 = about a hand and a half long).
+    static const float k = vr_value("blade_size", 1.7, 0.5, 3.0);
+    auto spine = [&](float t) { return V{flip * .10f * t * t * k, .05f + 1.35f * t * k, (-.10f - .55f * t * t + .35f * t) * k}; };
+    auto width = [&](float t) { return (.20f * (1 - t) * (1 - t * .3f) + .015f) * k; };
     V prev_a{}, prev_b{}, prev_t{};
     for (int k = 0; k <= kSeg; ++k) {
         const float t = static_cast<float>(k) / kSeg;
