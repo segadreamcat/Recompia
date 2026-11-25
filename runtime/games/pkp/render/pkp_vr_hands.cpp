@@ -44,8 +44,9 @@ struct Color {
     float r, g, b;
 };
 constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
-// The character's selected move (skill id, layout of the move wheel's ids); Cut is skill 5 (its action is 883).
-constexpr uint64_t kSelectedSkill = 0x1ec2;
+// The character's selected move: a skill id (the move wheel's ids) at +0x1a of its move state at character + 0x3950 (0x2fa9a4 reads it,
+// the wheel's next / previous at 0x2f9030 change it). Cut is skill 5 (its action is 883).
+constexpr uint64_t kSelectedSkill = 0x3950 + 0x1a;
 constexpr uint8_t kCutSkill = 5;
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
