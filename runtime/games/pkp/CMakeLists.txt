@@ -126,6 +126,8 @@ if(TARGET nxrt_gfx)
         "${_pkp}/render/pkp_shoulder_camera.cpp"
         "${_pkp}/render/pkp_vr_camera.cpp"
         "${_pkp}/render/pkp_vr_avatar.cpp"
+        "${_pkp}/render/pkp_vr_hands.cpp"
+        "${_pkp}/render/pkp_vr_petting.cpp"
         "${_pkp}/render/pkp_view_projection.cpp"
         # input
         "${_pkp}/input/pkp_play.cpp"

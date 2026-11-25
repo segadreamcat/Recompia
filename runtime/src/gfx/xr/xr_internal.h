@@ -55,6 +55,7 @@ struct Fns {
     PFN_xrDestroySpace DestroySpace = nullptr;
     PFN_xrDestroyActionSet DestroyActionSet = nullptr;
     PFN_xrRequestExitSession RequestExitSession = nullptr;
+    PFN_xrApplyHapticFeedback ApplyHapticFeedback = nullptr;
     PFN_xrGetVulkanInstanceExtensionsKHR GetVulkanInstanceExtensionsKHR = nullptr;
     PFN_xrGetVulkanDeviceExtensionsKHR GetVulkanDeviceExtensionsKHR = nullptr;
     PFN_xrGetVulkanGraphicsDeviceKHR GetVulkanGraphicsDeviceKHR = nullptr;
@@ -75,6 +76,7 @@ struct Swap {
 enum class ImageState { Free, Writing, Ready, Reading };
 struct StageImage {
     VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t w = 0, h = 0;
@@ -117,6 +119,11 @@ struct State {
     XrAction act_vec[kVecCount] = {};
     XrAction aim[2] = {};
     XrSpace aim_space[2] = {};
+    XrAction grip[2] = {}, vibration[2] = {};
+    std::atomic<float> haptic_amplitude[2]{}, haptic_seconds[2]{};
+    XrSpace grip_space[2] = {};
+    std::atomic<float> triggers[2]{}, squeezes[2]{};
+    std::atomic<uint64_t> spatial_buttons{0}, spatial_capture{0}, spatial_until{0};
     bool actions_ready = false;
     std::atomic<float> sharpness{0.f};
     std::unique_ptr<extras::Fsr1Spatial> sharpener; // game render queue only
@@ -130,7 +137,7 @@ struct State {
     std::atomic<int32_t> pad_lx{0}, pad_ly{0}, pad_rx{0}, pad_ry{0};
 
     std::mutex gm;
-    EyeView tracking[2], hands[2], cur_views[2], cur_hands[2];
+    EyeView tracking[2], hands[2], grips[2], cur_views[2], cur_hands[2];
     uint64_t reference_epoch = 0, panel_epoch = 0;
     XrTime recenter_time = 0;
     struct CameraTag { Tag tag; float view[16] = {}, vp[16] = {}; };

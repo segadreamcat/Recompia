@@ -13,6 +13,11 @@ void set_visible(bool v);  // false: hide the game's 2D from the next draw on; i
 // Scale the final 2D layer about the image centre, preserving its internal layout and clips. 1 keeps the native viewport.
 void set_scale(float scale);
 float scale();
+struct Region { float x=0, y=0, w=0, h=0; };
+// Preserve this normalised top-left rectangle before the final 2D draws. A compositor may replace that UI with its background.
+// Empty disables capture. The ordinary desktop picture is unchanged.
+void set_background_region(Region region);
+Region background_region();
 bool hidden();             // one relaxed atomic load: the replay asks it at every draw
 
 }  // namespace nxrt::ui_layer

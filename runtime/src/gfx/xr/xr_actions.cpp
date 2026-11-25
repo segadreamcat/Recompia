@@ -40,15 +40,23 @@ bool make_actions() {
 
     for (int hand = 0; hand < 2; ++hand) {
         if (!make_action(XR_ACTION_TYPE_POSE_INPUT, hand ? "right_aim" : "left_aim", hand ? "Right aim" : "Left aim", &st.aim[hand])) return false;
+        if (!make_action(XR_ACTION_TYPE_POSE_INPUT, hand ? "right_grip" : "left_grip", hand ? "Right grip" : "Left grip", &st.grip[hand])) return false;
         XrActionSpaceCreateInfo ci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
         ci.action = st.aim[hand];
         ci.poseInActionSpace.orientation.w = 1.f;
         if (!ok(st.f.CreateActionSpace(st.session, &ci, &st.aim_space[hand]), "xrCreateActionSpace")) return false;
+        if (!make_action(XR_ACTION_TYPE_VIBRATION_OUTPUT, hand ? "right_vibration" : "left_vibration", hand ? "Right vibration" : "Left vibration", &st.vibration[hand])) return false;
+        ci.action = st.grip[hand];
+        if (!ok(st.f.CreateActionSpace(st.session, &ci, &st.grip_space[hand]), "xrCreateActionSpace (grip)")) return false;
     }
     // Oculus Touch (Quest through Link, Air Link, Virtual Desktop or Steam Link)
     const XrActionSuggestedBinding touch[] = {
         {st.aim[0], path("/user/hand/left/input/aim/pose")},
         {st.aim[1], path("/user/hand/right/input/aim/pose")},
+        {st.grip[0], path("/user/hand/left/input/grip/pose")},
+        {st.grip[1], path("/user/hand/right/input/grip/pose")},
+        {st.vibration[0], path("/user/hand/left/output/haptic")},
+        {st.vibration[1], path("/user/hand/right/output/haptic")},
         {st.act_bool[kA], path("/user/hand/right/input/a/click")},
         {st.act_bool[kB], path("/user/hand/right/input/b/click")},
         {st.act_bool[kX], path("/user/hand/left/input/x/click")},
@@ -73,6 +81,10 @@ bool make_actions() {
     const XrActionSuggestedBinding index[] = {
         {st.aim[0], path("/user/hand/left/input/aim/pose")},
         {st.aim[1], path("/user/hand/right/input/aim/pose")},
+        {st.grip[0], path("/user/hand/left/input/grip/pose")},
+        {st.grip[1], path("/user/hand/right/input/grip/pose")},
+        {st.vibration[0], path("/user/hand/left/output/haptic")},
+        {st.vibration[1], path("/user/hand/right/output/haptic")},
         {st.act_bool[kMenu], path("/user/hand/left/input/b/click")},
         {st.act_bool[kA], path("/user/hand/right/input/a/click")},
         {st.act_bool[kB], path("/user/hand/right/input/b/click")},
@@ -126,6 +138,19 @@ void read_actions() {
         if (XR_SUCCEEDED(st.f.GetActionStateVector2f(st.session, &gi, &v)) && v.isActive) return v.currentState;
         return XrVector2f{0, 0};
     };
+    for (int h = 0; h < 2; ++h) {
+        st.triggers[h].store(fl(h ? kRTrig : kLTrig), std::memory_order_relaxed);
+        st.squeezes[h].store(fl(h ? kRGrip : kLGrip), std::memory_order_relaxed);
+    }
+    for (int h = 0; h < 2; ++h) {
+        const float amplitude = st.haptic_amplitude[h].exchange(0);
+        if (amplitude > 0 && st.vibration[h]) {
+            XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action = st.vibration[h];
+            XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION}; vibration.amplitude = amplitude;
+            vibration.duration = static_cast<XrDuration>(st.haptic_seconds[h].load() * 1e9); vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+            NXLOG_I("vr","diagnostic haptic hand %d amplitude %.2f result %d",h,amplitude,st.f.ApplyHapticFeedback(st.session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration)));
+        }
+    }
     uint64_t btns = 0;
     if (b(kA)) btns |= hid::btn(hid::kBtnA);
     if (b(kB)) btns |= hid::btn(hid::kBtnB);
@@ -172,6 +197,7 @@ void clear_pad() {
     State& st = s();
     st.left_click_was = st.right_click_was = false;
     st.commands.store(0);
+    for (int h = 0; h < 2; ++h) { st.triggers[h].store(0); st.squeezes[h].store(0); st.haptic_amplitude[h].store(0); }
     st.pad_buttons.store(0);
     st.pad_lx.store(0), st.pad_ly.store(0), st.pad_rx.store(0), st.pad_ry.store(0);
 }

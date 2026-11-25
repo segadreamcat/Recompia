@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <mutex>
 
 #include "nxrt/game.h"
 #include "nxrt/game_render.h"
@@ -13,6 +14,8 @@ namespace nxrt::ui_layer {
 namespace {
 std::atomic<bool> g_hidden{false};
 std::atomic<float> g_scale{1.f};
+std::mutex g_region_mutex;
+Region g_region;
 }  // namespace
 
 bool supported() {
@@ -27,6 +30,12 @@ void set_visible(bool v) {
 
 void set_scale(float value) { g_scale.store(supported() ? std::clamp(value, .2f, 1.f) : 1.f, std::memory_order_relaxed); }
 float scale() { return g_scale.load(std::memory_order_relaxed); }
+
+void set_background_region(Region region) {
+    std::lock_guard<std::mutex> lock(g_region_mutex);
+    g_region = supported() ? region : Region{};
+}
+Region background_region() { std::lock_guard<std::mutex> lock(g_region_mutex); return g_region; }
 
 bool hidden() { return g_hidden.load(std::memory_order_relaxed); }
 

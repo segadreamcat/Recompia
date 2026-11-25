@@ -127,6 +127,23 @@ bool crossed(std::uint32_t before, std::uint32_t after, std::uint32_t n) {
 }
 } // namespace
 
+size_t actor_positions(::Ctx* c, uint64_t base, ActorPosition* out, size_t capacity) {
+    const uint64_t pool = guest::deref(guest::deref(base + kPoolGlobal));
+    if (!guest::ok(pool, kFreeOffset + 4) || guest::rd<uint32_t>(pool+kFreeOffset)>kSlots) return 0;
+    size_t count=0;
+    for(uint32_t slot=0;slot<kSlots&&count<capacity;++slot){
+        const uint64_t actor=guest::deref(pool+kSlotsOffset+slot*8);
+        if(!guest::ok(actor,kKind+2)||!guest::deref(actor+kLinkB))continue;
+        if(guest::rd<uint8_t>(actor+0x186f)&&!guest::rd<uint8_t>(actor+0x186d))continue;
+        const uint64_t getter=guest::deref(guest::deref(actor)+16);if(!guest::ok(getter,4))continue;
+        const uint64_t pos=guest::call(c,getter,actor,0,0,0,0,(c->x[31]-0x400)&~uint64_t{15});
+        ActorPosition value{actor,{}};if(!guest::read(pos,value.position,sizeof value.position))continue;
+        bool valid=true;for(float f:value.position)valid&=std::isfinite(f)&&std::fabs(f)<1000000.f;
+        if(valid&&value.position[1]>-50000.f)out[count++]=value;
+    }
+    return count;
+}
+
 void start(std::uint64_t main_base) {
     g = {};
     g.base = main_base;

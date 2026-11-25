@@ -136,9 +136,12 @@ void present_on_render_thread(Window* w, int index, bool again) {
         tu.present_out_w.store(static_cast<int>(fi.extent.width), std::memory_order_relaxed);
         tu.present_out_h.store(static_cast<int>(fi.extent.height), std::memory_order_relaxed);
     }
-    if (!again)   // PokopiaVR: the picture into the headset eye this frame rendered (nothing when the frame is not a VR one)
+    if (!again) {   // The headset compositor may relocate a piece of UI while preserving its original world background.
+        VkImage background=VK_NULL_HANDLE;VkRect2D region{};
+        replay_ui_background(t,&background,&region);
         xr::render_record(device(), f.cb, tex_image(t), tex_vk_format(t), e.width, e.height, crop,
-                          window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);
+                          window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT,background,&region);
+    }
     pp->set_flip_y(window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);   // the game runs with the lower-left origin (mode 0)
     // HDR scene / HDR swapchain / FSR 1 or NIS / picture controls / a colour matrix go through the output pass (S14); everything else is the
     // plain present pass of the SDR path

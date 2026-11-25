@@ -11,6 +11,8 @@ namespace vr_camera {
 bool owns_projection(uint64_t camera);
 // Right-hand aim in game coordinates; head aim while the controller is untracked. False outside a recently updated VR view.
 bool aim_ray(float eye[3], float direction[3]);
+// A tracked LOCAL point transformed with the current first-person anchor and yaw.
+bool reference_point(const float point[3], uint64_t epoch, float world[3]);
 }
 
 }  // namespace nxrt::games::pkp

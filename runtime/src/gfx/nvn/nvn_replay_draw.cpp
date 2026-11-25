@@ -480,6 +480,7 @@ static bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopolo
     static const bool keep_ro = nxrt::config_get_bool("nvn", "depth_ro_keep", false);
     const bool want_ro = g_cmd.want_depth_ro ||
                          (keep_ro && P.open && P.depth_ro && (!S.ds.depth_test || !S.ds.depth_write) && !S.ds.stencil_test);
+    ui_capture_background(vs);
     { RpScope rp_(kRpPass); pass_ok = ensure_pass(want_ro, g_copies.fbl_want); }
     if (!pass_ok) { log_once(kOnceDrawNoTarget, "draw without a usable render target skipped"); return false; }
     if (ui_skip_draw(vs)) return false;   // after the pass is begun, so its clears and loads still happen (nxrt/ui_layer.h)

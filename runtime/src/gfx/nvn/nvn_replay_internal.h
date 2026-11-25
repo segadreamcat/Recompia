@@ -397,6 +397,7 @@ extern nxrt::GaugeCounter g_gauge_pipeline_binds;
 // After ensure_pass: true while the 2D is hidden and this draw is part of it (vertex inputs, colour target 0 a presented texture). One
 // relaxed atomic load while nothing is hidden.
 bool ui_is_draw(const ShaderInfo* vs);
+void ui_capture_background(const ShaderInfo* vs);
 bool ui_skip_draw(const ShaderInfo* vs);
 void ui_shutdown();   // replay_shutdown: the presented textures are let go
 // ---- frame trace and debug aids (nvn_replay_trace.cpp) ---------------------------------------------------------------------------

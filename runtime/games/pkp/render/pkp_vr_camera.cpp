@@ -318,10 +318,11 @@ void game_frame(::Ctx* c) {
     const uint64_t player = guest::deref(players + layout::kManagerPlayer);
     const uint8_t input_flags = guest::ok(player, layout::kInputLock + 1) ? rd<uint8_t>(player + layout::kInputLock) : 0;
     const bool locked = (input_flags & layout::kInputLockBit) != 0;
-    // Native information popups pause the follow camera with bit 3; scripted scene cameras retain stereo.
-    if (follow && (input_flags & 0x08)) world = false;
-    if (g.selection_menu.load(std::memory_order_relaxed)) world = false;
-    if (world && settings::get_bool(settings::Key::VrAutoReading) && (!g.playing.load(std::memory_order_relaxed) || !play_camera_free() || locked)) world = false;
+    // The reading-panel preference applies to selectable screens and tutorial popups too. Opening the bag must not force
+    // a mode change when the player chose to stay in the world.
+    if (world && settings::get_bool(settings::Key::VrAutoReading) &&
+        ((follow && (input_flags & 0x08)) || g.selection_menu.load(std::memory_order_relaxed) ||
+         !g.playing.load(std::memory_order_relaxed) || !play_camera_free() || locked)) world = false;
     g.scripted = scene && !follow;
     vr_avatar::update(c, world && follow && xr::running() && settings::get_bool(settings::Key::VrFirstPerson));
     const bool restore = g.world && !world && g.valid;
@@ -374,6 +375,12 @@ void status_text(char* buf, size_t n) {
 
 bool vr_camera::owns_projection(uint64_t camera) {
     return g.valid && g.eye_in_view.load(std::memory_order_relaxed) >= 0 && camera == view_block0();
+}
+
+bool vr_camera::reference_point(const float point[3], uint64_t epoch, float world[3]) {
+    if (!g.valid || !g.world || !g.first_person || !g.latched || epoch != g.reference_epoch) return false;
+    const V3 p = add(g.anchor, yaw(scale(V3{point[0]-g.origin[0], point[1]-g.origin[1], point[2]-g.origin[2]}, xr::world_scale()), g.yaw_s, g.yaw_c));
+    world[0]=p.x; world[1]=p.y; world[2]=p.z; return true;
 }
 
 bool vr_camera::aim_ray(float eye[3], float direction[3]) {

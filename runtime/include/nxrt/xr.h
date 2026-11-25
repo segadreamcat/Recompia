@@ -39,6 +39,24 @@ struct EyeView {
 EyeView eye_view();
 // Right controller aim pose from the same tracking snapshot; invalid when tracking is unavailable.
 EyeView hand_aim();
+struct HandView { EyeView aim, grip; float trigger = 0, squeeze = 0; };
+// Latest controller tracking in LOCAL metres. Grip poses orient held objects; aim poses orient pointing rays.
+HandView hand_view(int hand);
+EyeView head_view();
+// Short controller feedback, queued to the headset thread; amplitude 0..1 and duration at most 250 ms.
+void haptic(int hand, float amplitude, float seconds);
+// A brief virtual pad press and input capture for an application's spatial controls. A zero mask releases capture.
+void spatial_input(uint64_t buttons, uint64_t capture, uint64_t until_ns);
+struct SpatialVertex { float pos[3], color[4], uv[2]; float picture = 0; };
+struct SpatialScene {
+    static constexpr uint32_t kMaxVertices = 8190;
+    SpatialVertex vertices[kMaxVertices];
+    uint32_t count = 0;
+    // Optional live picture region, normalised top-left UVs of the presented image. Used only by picture vertices.
+    float picture_rect[4] = {};
+};
+// Reference-space geometry, latched once per stereo pair. Empty clears it; source texture extraction stays on the GPU.
+void set_spatial_scene(const SpatialScene& scene);
 
 // Image metadata is matched to the camera uniforms consumed by the scene draw. Presents never advance the camera eye.
 struct Tag {

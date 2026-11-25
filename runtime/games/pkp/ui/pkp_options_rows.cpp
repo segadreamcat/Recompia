@@ -334,10 +334,14 @@ const Row kMouse[] = {
 };
 
 const Row kVr[] = {
+    key_row("VR Petting Rumble", "Gentle feedback while moving a tracked hand against a nearby creature. Does not change its friendship or start dialogue.", settings::Key::VrPetting),
+    key_row("VR Tracked Arms", "Purple hands follow controller grip poses; arms connect to estimated shoulders in first person.", settings::Key::VrHands),
+    key_row("VR Wrist Display", "Selected move on the left wrist. Bring the right hand close, hold its trigger and swipe sideways to change moves.", settings::Key::VrWrist),
+    key_row("VR Whip Cast", "Hold right grip, pull your hand back, then whip forward to cast the selected move. Trigger casting remains available.", settings::Key::VrWhipCast),
     key_row("VR HUD Size", "In-world HUD size about the centre of the view. 55% brings edge widgets into both eyes. Menus keep their normal size.", settings::Key::VrHudScale, .05, "%.0f%%", 100),
     key_row("VR Sharpness", "Sharpens the actual headset eye images. Start at 65%; lower it if edges shimmer. Does not change render resolution.", settings::Key::VrSharpness, .05, "%.0f%%", 100, "Off"),
     key_row("VR First Person", "Right-stick click or F11 switches between first person and the normal follow-camera position.", settings::Key::VrFirstPerson),
-    key_row("VR Reading Panel", "On: show locked dialogue on a raised flat panel. Off: keep scripted scenes in stereo VR. Selection menus still use a readable panel.", settings::Key::VrAutoReading),
+    key_row("VR Reading Panel", "On: show menus, tutorials and locked dialogue on a raised flat panel. Off: keep the world in stereo when opening the bag or talking.", settings::Key::VrAutoReading),
     key_row("VR Shortcuts", "Short left-stick click or F12 saves a screenshot. Right-stick click or F11 changes perspective. Hold left stick and tilt for the D-pad; both sticks open Minus.", settings::Key::VrShortcuts),
 };
 

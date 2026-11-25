@@ -98,6 +98,7 @@ bool load_instance_fns() {
            load_fn(i, "xrGetActionStatePose", &f.GetActionStatePose) &&
            load_fn(i, "xrDestroySpace", &f.DestroySpace) && load_fn(i, "xrDestroyActionSet", &f.DestroyActionSet) &&
            load_fn(i, "xrRequestExitSession", &f.RequestExitSession) &&
+           load_fn(i, "xrApplyHapticFeedback", &f.ApplyHapticFeedback) &&
            load_fn(i, "xrGetVulkanInstanceExtensionsKHR", &f.GetVulkanInstanceExtensionsKHR) &&
            load_fn(i, "xrGetVulkanDeviceExtensionsKHR", &f.GetVulkanDeviceExtensionsKHR) &&
            load_fn(i, "xrGetVulkanGraphicsDeviceKHR", &f.GetVulkanGraphicsDeviceKHR) &&
@@ -318,6 +319,7 @@ void vk_shutdown(VkDevice device) {
     vkDeviceWaitIdle(device);
     destroy_images();
     for (auto& space : st.aim_space) if (space) { st.f.DestroySpace(space); space = XR_NULL_HANDLE; }
+    for (auto& space : st.grip_space) if (space) { st.f.DestroySpace(space); space = XR_NULL_HANDLE; }
     if (st.local) { st.f.DestroySpace(st.local); st.local = XR_NULL_HANDLE; }
     if (st.session) { st.f.DestroySession(st.session); st.session = XR_NULL_HANDLE; }
     if (st.set) { st.f.DestroyActionSet(st.set); st.set = XR_NULL_HANDLE; }

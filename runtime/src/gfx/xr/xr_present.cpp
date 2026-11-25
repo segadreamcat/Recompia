@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Three-slot image handoff. Game queue writes private staging images; only the headset thread touches OpenXR images or its queue.
 #include "xr/xr_internal.h"
+#include "xr/xr_spatial.h"
 #include <algorithm>
 #include <cmath>
 #include "nxrt/log.h"
@@ -30,6 +31,7 @@ void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayou
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 void destroy_stage(StageImage& image) {
+    if (image.view) vkDestroyImageView(s().vk_device, image.view, nullptr);
     if (image.image) vkDestroyImage(s().vk_device, image.image, nullptr);
     if (image.memory) vkFreeMemory(s().vk_device, image.memory, nullptr);
     image = {};
@@ -42,13 +44,17 @@ bool ensure_stage(StageImage& image, VkFormat format, uint32_t w, uint32_t h, ui
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D; ci.format = format; ci.extent = {w, h, 1};
     ci.mipLevels = ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if (vkCreateImage(st.vk_device, &ci, nullptr, &image.image) != VK_SUCCESS) return false;
     VkMemoryRequirements mr; vkGetImageMemoryRequirements(st.vk_device, image.image, &mr);
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ai.allocationSize = mr.size; ai.memoryTypeIndex = memory_type(mr.memoryTypeBits);
     if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(st.vk_device, &ai, nullptr, &image.memory) != VK_SUCCESS ||
         vkBindImageMemory(st.vk_device, image.image, image.memory, 0) != VK_SUCCESS) { destroy_stage(image); return false; }
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image=image.image; view.viewType=VK_IMAGE_VIEW_TYPE_2D; view.format=format;
+    view.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    if(vkCreateImageView(st.vk_device,&view,nullptr,&image.view)!=VK_SUCCESS){destroy_stage(image);return false;}
     image.format = format; image.w = w; image.h = h;
     return true;
 }
@@ -156,6 +162,7 @@ void transport_frame() {
 
 void destroy_images() {
     State& st = s();
+    spatial_shutdown();
     st.sharpener.reset();
     st.sharpener_tried = st.sharpener_logged = false;
     for (auto& stage : st.stages) {
@@ -175,7 +182,7 @@ namespace { thread_local Tag t_render_tag; }
 void render_set_tag(Tag tag) { t_render_tag = render_resolve_tag(tag); }
 Tag render_tag() { return t_render_tag; }
 
-void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y) {
+void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y, VkImage background, const VkRect2D* background_rect) {
     State& st = s(); const Tag tag = t_render_tag;
     if (tag.eye < 0 || tag.eye > 1 || !running()) return;
     uint64_t consumed = 0, completed = 0;
@@ -202,7 +209,7 @@ void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFo
     int slot = tag.world ? st.writing_stage : -1;
     if (slot < 0) {
         if (tag.world && tag.eye != 0) return;
-        for (int i = 0; i < State::kStages; ++i) if (st.stages[i].state == ImageState::Free) { slot = i; break; }
+        for (int i = 0; i < State::kStages; ++i) if (st.stages[i].state == ImageState::Free && st.stages[i].ready_value <= completed) { slot = i; break; }
         if (slot < 0) return; // no available transport slot: skip capture without stalling the game
         Stage& stage = st.stages[slot];
         if (stage.consumed_value) {
@@ -252,6 +259,16 @@ void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFo
             if (!st.sharpener_logged) { st.sharpener_logged = true; NXLOG_I(kTag, "eye sharpening: native %ux%u, RCAS %.2f before headset transfer", w, h, sharpness); }
         }
     }
+    VkRect2D excluded{};
+    if(background_rect){excluded=*background_rect;excluded.offset.x-=x;
+        excluded.offset.y=flip_y?y+static_cast<int32_t>(h)-background_rect->offset.y-static_cast<int32_t>(excluded.extent.height):background_rect->offset.y-y;}
+    spatial_render(device, cb, slot, eye, image, tag, background, excluded, flip_y);
+    if(tag.world){
+        barrier(cb,source,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_ACCESS_SHADER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkImageBlit mirror{};mirror.srcSubresource=mirror.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};mirror.srcOffsets[1]={static_cast<int32_t>(w),static_cast<int32_t>(h),1};mirror.dstOffsets[0]={x,flip_y?y+static_cast<int32_t>(h):y,0};mirror.dstOffsets[1]={x+static_cast<int32_t>(w),flip_y?y:y+static_cast<int32_t>(h),1};
+        vkCmdBlitImage(cb,image.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&mirror,VK_FILTER_NEAREST);
+        barrier(cb,source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
+    }
     st.capture_stage = slot; st.capture_eye = eye; st.capture_tag = tag;
 }
 
@@ -269,7 +286,7 @@ void render_after_submit() {
     Stage& stage = st.stages[st.capture_stage]; const int eye = st.capture_eye;
     stage.ready_value = ready; stage.written[eye] = true; stage.tags[eye] = st.capture_tag;
     if (!stage.world || (stage.written[0] && stage.written[1])) {
-        stage.state = ImageState::Ready;
+        stage.state = ImageState::Free;
         if (stage.world) { st.captured_frame = stage.frame; st.writing_stage = -1; }
     }
     st.capture_stage = st.capture_eye = -1;

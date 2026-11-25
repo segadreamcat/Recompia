@@ -70,18 +70,24 @@ void locate_tracking(XrTime time) {
     XrViewState vs{XR_TYPE_VIEW_STATE};
     uint32_t count = 0;
     if (XR_FAILED(st.f.LocateViews(st.session, &li, &vs, 2, &count, views)) || count != 2 ||
-        !(vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) || !(vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) return;
-    EyeView hands[2];
+        !(vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) || !(vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) {
+        std::lock_guard<std::mutex> lock(st.gm);
+        for (int h = 0; h < 2; ++h) st.tracking[h] = st.hands[h] = st.grips[h] = EyeView{};
+        return;
+    }
+    EyeView hands[2], grips[2];
     if (st.actions_ready) for (int h = 0; h < 2; ++h) {
         XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
-        gi.action = st.aim[h];
+        for (int pose = 0; pose < 2; ++pose) {
+        gi.action = pose ? st.grip[h] : st.aim[h];
         XrActionStatePose action{XR_TYPE_ACTION_STATE_POSE};
         XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
         if (XR_SUCCEEDED(st.f.GetActionStatePose(st.session, &gi, &action)) && action.isActive &&
-            XR_SUCCEEDED(st.f.LocateSpace(st.aim_space[h], st.local, time, &loc)) &&
+            XR_SUCCEEDED(st.f.LocateSpace(pose ? st.grip_space[h] : st.aim_space[h], st.local, time, &loc)) &&
             (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
             XrView v{XR_TYPE_VIEW}; v.pose = loc.pose;
-            hands[h] = to_eye(v, -1);
+            (pose ? grips[h] : hands[h]) = to_eye(v, -1);
+        }
         }
     }
     std::lock_guard<std::mutex> lk(st.gm);
@@ -92,7 +98,8 @@ void locate_tracking(XrTime time) {
         st.tracking[e].center[0] = (views[0].pose.position.x + views[1].pose.position.x) * 0.5f;
         st.tracking[e].center[1] = (views[0].pose.position.y + views[1].pose.position.y) * 0.5f;
         st.tracking[e].center[2] = (views[0].pose.position.z + views[1].pose.position.z) * 0.5f;
-        st.hands[e] = hands[e];
+        st.hands[e] = hands[e]; st.grips[e] = grips[e];
+        st.hands[e].reference_epoch = st.grips[e].reference_epoch = st.reference_epoch;
     }
 }
 
