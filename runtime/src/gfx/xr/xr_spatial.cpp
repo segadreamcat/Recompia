@@ -2,6 +2,7 @@
 // Application-owned tracked geometry and live picture patches, independent of
 // the game's renderer and assets.
 #include "xr/xr_spatial.h"
+#include "nxrt/ui_layer.h"
 #include "extras/vk_make.h"
 #include "nxrt/gfx.h"
 #include "nxrt/log.h"
@@ -148,10 +149,11 @@ void set_spatial_scene(const SpatialScene &scene) {
     std::lock_guard<std::mutex> lock(g.mutex);
     g.pending.count = std::min(scene.count, SpatialScene::kMaxVertices) / 3 * 3;
     std::copy_n(scene.vertices, g.pending.count, g.pending.vertices);
-    std::copy_n(scene.picture_rect, 4, g.pending.picture_rect);
+    std::copy_n(scene.picture_rect, 8, g.pending.picture_rect);
 }
 namespace detail {
-void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, StageImage &target, const Tag &tag, VkImage background, VkRect2D excluded, bool flip_y) {
+constexpr int32_t kPicture = 256;   // side of one band of the live picture image
+void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, StageImage &target, const Tag &tag, const VkImage *background, const VkRect2D *excluded, bool flip_y) {
     if (!tag.world)
         return;
     if (eye == 0) {
@@ -169,7 +171,8 @@ void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, 
         return;
     if (!out.picture) {
         gfx::ImageDesc ci;
-        ci.width = ci.height = 256;
+        ci.width = kPicture;
+        ci.height = kPicture * 3;   // bands: picture 1, picture 2, picture 2's background
         ci.format = target.format;
         ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         ci.name = "XR live picture patch";
@@ -183,32 +186,68 @@ void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, 
         if(device.create_image(ci,&out.depth)!=VK_SUCCESS)return;
     }
     barrier(cb, out.picture.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
-    const float *rect = scene.picture_rect;
-    if (rect[2] > 0 && rect[3] > 0) {
-        VkImageBlit b{};
-        b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        b.srcOffsets[0] = {static_cast<int32_t>(std::clamp(rect[0], 0.f, 1.f) * target.w),
-                           static_cast<int32_t>(std::clamp(rect[1], 0.f, 1.f) * target.h), 0};
-        b.srcOffsets[1] = {static_cast<int32_t>(std::clamp(rect[0] + rect[2], 0.f, 1.f) * target.w),
-                           static_cast<int32_t>(std::clamp(rect[1] + rect[3], 0.f, 1.f) * target.h), 1};
-        b.dstOffsets[1] = {256, 256, 1};
-        vkCmdBlitImage(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.picture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                       &b, VK_FILTER_LINEAR);
-    } else {
+    const auto band = [&](int n, VkImage src, const VkOffset3D &a, const VkOffset3D &b) {
+        VkImageBlit blit{};
+        blit.srcSubresource = blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[0] = a;
+        blit.srcOffsets[1] = b;
+        blit.dstOffsets[0] = {0, kPicture * n, 0};
+        blit.dstOffsets[1] = {kPicture, kPicture * (n + 1), 1};
+        vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.picture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       VK_FILTER_LINEAR);
+    };
+    const auto from_target = [&](const float *rect, VkOffset3D &a, VkOffset3D &b) {
+        if (!(rect[2] > 0 && rect[3] > 0)) return false;
+        a = {static_cast<int32_t>(std::clamp(rect[0], 0.f, 1.f) * target.w), static_cast<int32_t>(std::clamp(rect[1], 0.f, 1.f) * target.h), 0};
+        b = {static_cast<int32_t>(std::clamp(rect[0] + rect[2], 0.f, 1.f) * target.w),
+             static_cast<int32_t>(std::clamp(rect[1] + rect[3], 0.f, 1.f) * target.h), 1};
+        return b.x > a.x && b.y > a.y;
+    };
+    {
         VkClearColorValue white{{1, 1, 1, 1}};
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, out.picture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &range);
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = out.picture.image;
+        b.subresourceRange = range;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    }
+    VkOffset3D a{}, b{};
+    if (from_target(scene.picture_rect, a, b)) band(0, target.image, a, b);
+    // Picture 2 and its background: with no captured background both bands hold the same pixels, so nothing of it is drawn.
+    if (from_target(scene.picture_rect + 4, a, b)) {
+        band(1, target.image, a, b);
+        const VkRect2D &e = excluded[1];
+        if (background && background[1] && e.extent.width && e.extent.height) {
+            // the background holds the region with its margin; take just the box's pixels (rows run the other way when flipped)
+            const int32_t w = static_cast<int32_t>(e.extent.width), h = static_cast<int32_t>(e.extent.height);
+            const int32_t x0 = std::clamp(a.x - e.offset.x, 0, w), x1 = std::clamp(b.x - e.offset.x, 0, w);
+            const int32_t y0 = std::clamp(a.y - e.offset.y, 0, h), y1 = std::clamp(b.y - e.offset.y, 0, h);
+            if (x1 > x0 && y1 > y0)
+                band(2, background[1], {x0, flip_y ? h - y0 : y0, 0}, {x1, flip_y ? h - y1 : y1, 1});
+            else
+                band(2, target.image, a, b);
+        } else {
+            band(2, target.image, a, b);
+        }
     }
     barrier(cb, out.picture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-    if(background && excluded.extent.width && excluded.extent.height && excluded.offset.x>=0 && excluded.offset.y>=0 &&
-       excluded.offset.x+excluded.extent.width<=target.w && excluded.offset.y+excluded.extent.height<=target.h){
+    // The lifted UI regions are painted over with the world they covered.
+    for (int r = 0; background && excluded && r < ui_layer::kRegions; ++r) {
+        const VkRect2D &e = excluded[r];
+        if (!background[r] || !e.extent.width || !e.extent.height || e.offset.x < 0 || e.offset.y < 0 || e.offset.x + e.extent.width > target.w ||
+            e.offset.y + e.extent.height > target.h)
+            continue;
         barrier(cb,target.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_ACCESS_TRANSFER_READ_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-        VkImageBlit b{};b.srcSubresource=b.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
-        const int w=static_cast<int>(excluded.extent.width),h=static_cast<int>(excluded.extent.height);
-        b.srcOffsets[0]={0,flip_y?h:0,0};b.srcOffsets[1]={w,flip_y?0:h,1};
-        b.dstOffsets[0]={excluded.offset.x,excluded.offset.y,0};b.dstOffsets[1]={excluded.offset.x+w,excluded.offset.y+h,1};
-        vkCmdBlitImage(cb,background,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,target.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&b,VK_FILTER_NEAREST);
+        VkImageBlit bl{};bl.srcSubresource=bl.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+        const int w=static_cast<int>(e.extent.width),h=static_cast<int>(e.extent.height);
+        bl.srcOffsets[0]={0,flip_y?h:0,0};bl.srcOffsets[1]={w,flip_y?0:h,1};
+        bl.dstOffsets[0]={e.offset.x,e.offset.y,0};bl.dstOffsets[1]={e.offset.x+w,e.offset.y+h,1};
+        vkCmdBlitImage(cb,background[r],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,target.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&bl,VK_FILTER_NEAREST);
         barrier(cb,target.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
     }
     struct Tri {
@@ -239,7 +278,7 @@ void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, 
             t.clip[3] = z;
             std::copy_n(v.color, 4, t.color);
             t.uv[0] = v.uv[0];
-            t.uv[1] = v.uv[1];
+            t.uv[1] = v.picture > 1.5f ? (1 + v.uv[1]) / 3 : v.picture > .5f ? v.uv[1] / 3 : v.uv[1];   // the picture's band
             t.uv[2] = v.picture;
             tri.distance += z;
         }

@@ -16,8 +16,9 @@ float scale();
 struct Region { float x=0, y=0, w=0, h=0; };
 // Preserve this normalised top-left rectangle before the final 2D draws. A compositor may replace that UI with its background.
 // Empty disables capture. The ordinary desktop picture is unchanged.
-void set_background_region(Region region);
-Region background_region();
+inline constexpr int kRegions = 2;   // regions a compositor may lift out at once (index 0..kRegions-1)
+void set_background_region(int index, Region region);
+Region background_region(int index);
 bool hidden();             // one relaxed atomic load: the replay asks it at every draw
 
 }  // namespace nxrt::ui_layer

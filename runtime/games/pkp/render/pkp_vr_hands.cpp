@@ -178,54 +178,80 @@ V index_tip(const HandFrame &f, float trigger) {
     const float a = std::clamp(trigger, 0.f, 1.f) * 1.4f, c = std::cos(a), sn = std::sin(a), y = p.y - .47f;
     return hand_point(f, {p.x, .47f + y * c - p.z * sn, y * sn + p.z * c});
 }
-// A wristwatch on the back of the left glove's wrist: a band around the wrist and a round face showing the native move wheel. Face axes:
-// right toward the fingers, up toward the little finger, normal out of the back of the hand (readable with the forearm across the body).
+// A square smartwatch on the back of the left glove's wrist: a band around the wrist, a rounded case and a dark screen with the native move
+// wheel on it; the native "Nearby Habitats" box floats just past the watch. Face axes: right toward the fingers, up toward the little
+// finger (across the wrist, the long side), normal out of the back of the hand (readable with the forearm across the body).
 struct Watch {
     V center, right, up, normal;
-    float radius = .022f;
+    float half_w = .0175f, half_h = .0205f;   // case half-sizes along right and up
 };
-float watch_radius() { static const float v = vr_value("watch_size", 0.022, 0.010, 0.060); return v; }
+// [vr] watch_size: the case's long side in metres (an Apple Watch is about 0.041).
+float watch_size() { static const float v = vr_value("watch_size", 0.041, 0.020, 0.090); return v; }
 // Wrist cross-section of the left glove, hand-local units: centre and half-widths across (X) and through (Z) the wrist.
 constexpr float kWristY = .05f, kWristCx = -.044f, kWristCz = -.005f, kWristRx = .25f, kWristRz = .20f;
+// Native HUD rects (x, y, w, h of the 16:9 HUD in the square picture, before the VR HUD inset): the move wheel and the Nearby Habitats box.
+constexpr float kWheelRect[] = {.80f, .65f, .19f, .16f}, kHabitatRect[] = {.0f, .27f, .28f, .15f};
 Watch watch_pose(const HandFrame &f) {
     Watch w;
-    w.radius = watch_radius();
-    const float lift = .012f / f.size;   // the face sits on the band, just off the back of the wrist
+    w.half_h = watch_size() * .5f;
+    w.half_w = w.half_h * .85f;
+    const float lift = .012f / f.size;   // the case sits on the band, just off the back of the wrist
     w.center = hand_point(f, {kWristCx, kWristY, kWristCz - kWristRz - lift});
     w.right = norm(hand_dir(f, {0, 1, 0}));
     w.up = norm(hand_dir(f, {1, 0, 0}));
     w.normal = norm(hand_dir(f, {0, 0, -1}));
     return w;
 }
-void watch(const HandFrame &f, const Watch &w, bool touched) {
-    const Color band{.05f, .05f, .07f}, bezel{.10f, .10f, .12f}, white{1, 1, 1};
+// A rounded rectangle in the face plane, as a fan; picture != 0 maps it onto that live picture (u right, v down).
+void rounded(const Watch &w, V center, float hw, float hh, float corner, Color color, float picture = 0) {
+    constexpr int kArc = 6;
+    V ring[4 * (kArc + 1)];
+    int n = 0;
+    const float cx[] = {hw - corner, -(hw - corner), -(hw - corner), hw - corner}, cy[] = {hh - corner, hh - corner, -(hh - corner), -(hh - corner)};
+    for (int q = 0; q < 4; ++q)
+        for (int k = 0; k <= kArc; ++k) {
+            const float a = (q + static_cast<float>(k) / kArc) * kPi * .5f;
+            ring[n++] = {cx[q] + corner * std::cos(a), cy[q] + corner * std::sin(a), 0};
+        }
+    auto at = [&](V p) { return center + w.right * p.x + w.up * p.y; };
+    auto uv = [&](V p) { return V{.5f + p.x / (2 * hw), .5f - p.y / (2 * hh), 0}; };
+    for (int i = 0; i < n; ++i) {
+        const V a = ring[i], b = ring[(i + 1) % n];
+        triangle(at({}), at(a), at(b), color, picture, uv({}), uv(a), uv(b));
+    }
+}
+void watch(const HandFrame &f, const Watch &w, bool touched, bool habitats) {
+    const Color band{.05f, .05f, .07f}, bezel{.12f, .12f, .14f}, screen{.01f, .01f, .012f}, white{1, 1, 1};
     // band: an elliptical strip around the wrist, slightly outside the glove
     constexpr int kBand = 24;
-    const float half = .009f / f.size, grow = 1.08f;
+    const float half = w.half_w * .9f / f.size, grow = 1.08f;
     for (int i = 0; i < kBand; ++i) {
         const float a = 2 * kPi * i / kBand, b = 2 * kPi * (i + 1) / kBand;
         auto at = [&](float t, float dy) {
             return hand_point(f, {kWristCx + kWristRx * grow * std::cos(t), kWristY + dy, kWristCz + kWristRz * grow * std::sin(t)});
         };
         const float light = .7f + .3f * std::max(0.f, -std::sin(a));
-        const Color c{band.r * light, band.g * light, band.b * light};
-        triangle(at(a, -half), at(b, -half), at(b, half), c);
-        triangle(at(a, -half), at(b, half), at(a, half), c);
+        const Color col{band.r * light, band.g * light, band.b * light};
+        triangle(at(a, -half), at(b, -half), at(b, half), col);
+        triangle(at(a, -half), at(b, half), at(a, half), col);
     }
-    // bezel: a short cylinder and a rim, then the face
-    tube(w.center - w.normal * .006f, w.center, w.radius * 1.08f, w.radius * 1.08f, bezel, false);
-    constexpr int kRing = 32;
-    for (int i = 0; i < kRing; ++i) {
-        const float a = 2 * kPi * i / kRing, b = 2 * kPi * (i + 1) / kRing;
-        const V p = w.right * std::cos(a) + w.up * std::sin(a), q = w.right * std::cos(b) + w.up * std::sin(b);
-        triangle(w.center + p * (w.radius * 1.08f), w.center + q * (w.radius * 1.08f), w.center + q * w.radius, bezel);
-        triangle(w.center + p * (w.radius * 1.08f), w.center + q * w.radius, w.center + p * w.radius, bezel);
-        const V z = w.normal * .0005f;
-        triangle(w.center + z, w.center + p * w.radius + z, w.center + q * w.radius + z, white, 1, {.5f, .5f, 0},
-                 {.5f + .5f * std::cos(a), .5f - .5f * std::sin(a), 0}, {.5f + .5f * std::cos(b), .5f - .5f * std::sin(b), 0});
+    // case: back plate, rounded front, then the screen and the wheel on it
+    const float corner = w.half_w * .42f;
+    rounded(w, w.center - w.normal * .007f, w.half_w, w.half_h, corner, bezel);
+    rounded(w, w.center, w.half_w, w.half_h, corner, bezel);
+    const float sw = w.half_w * .86f, sh = w.half_h * .88f;
+    rounded(w, w.center + w.normal * .0004f, sw, sh, corner * .8f, screen);
+    const float wheel_h = std::min(sh, sw / 1.19f);
+    rounded(w, w.center + w.normal * .0008f, sw, wheel_h, corner * .5f, white, 1);
+    if (touched)   // a small light at the edge while a finger is on the screen
+        ball(xr::EyeView{}, w.center + w.up * (sh * .85f) + w.normal * .002f, {.002f, .002f, .002f}, green);
+    // the Nearby Habitats box, floating past the 12 o'clock side; only the box's own pixels are drawn (picture 2)
+    if (habitats) {
+        const float card_w = vr_value("habitat_card_width", 0.075, 0.03, 0.20) * .5f;
+        const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
+        const V at = w.center + w.normal * .012f + w.up * (w.half_h + card_h + .006f);
+        rounded(w, at, card_w, card_h, .001f, white, 2);
     }
-    if (touched)   // a small light at the edge while a finger is on the face
-        ball(xr::EyeView{}, w.center + w.up * (w.radius * .8f) + w.normal * .002f, {.003f, .003f, .003f}, green);
 }
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
@@ -251,7 +277,7 @@ void game_frame(::Ctx *) {
     if (!active) {
         reset_interaction();
         xr::set_spatial_scene(g.scene);
-        ui_layer::set_background_region({});
+        ui_layer::set_background_region(0, {}), ui_layer::set_background_region(1, {});
         return;
     }
     if (head.reference_epoch != g.epoch) {
@@ -279,7 +305,7 @@ void game_frame(::Ctx *) {
             const float depth = dot(delta, w.normal);
             x = dot(delta, w.right);
             const float y = dot(delta, w.up);
-            on_face = depth > -.015f && depth < .025f && x * x + y * y < (w.radius * 1.7f) * (w.radius * 1.7f) &&
+            on_face = depth > -.015f && depth < .025f && std::fabs(x) < w.half_w * 1.5f && std::fabs(y) < w.half_h * 1.5f &&
                       dot(w.normal, norm(vec(head.center) - w.center)) > .1f;
         }
         if (on_face && !g.touching) {
@@ -299,15 +325,17 @@ void game_frame(::Ctx *) {
             xr::haptic(1, .12f, .02f);
             NXLOG_I("vr", "wrist swipe: %s", next ? "next move" : "previous move");
         }
-        watch(left_frame, w, g.touching);
-        // Native 16:9 HUD wheel bounds in the square render, transformed by the
-        // user's whole-HUD inset.
+        watch(left_frame, w, g.touching, true);
+        // the HUD rects in the square render, moved by the user's whole-HUD inset
         const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
-        const float native[] = {.80f, .65f, .19f, .16f};
-        g.scene.picture_rect[0] = .5f + (native[0] - .5f) * scale;
-        g.scene.picture_rect[1] = .5f + (native[1] - .5f) * scale;
-        g.scene.picture_rect[2] = native[2] * scale;
-        g.scene.picture_rect[3] = native[3] * scale;
+        for (int k = 0; k < 2; ++k) {
+            const float *native = k ? kHabitatRect : kWheelRect;
+            float *r = g.scene.picture_rect + 4 * k;
+            r[0] = .5f + (native[0] - .5f) * scale;
+            r[1] = .5f + (native[1] - .5f) * scale;
+            r[2] = native[2] * scale;
+            r[3] = native[3] * scale;
+        }
     } else {
         g.touching = false;
     }
@@ -382,15 +410,17 @@ void game_frame(::Ctx *) {
     }
     xr::spatial_input(now < g.pulse_until ? g.pulse : 0, capture, now + 150000000ull);
     xr::set_spatial_scene(g.scene);
-    const float* r=g.scene.picture_rect;
-    const float margin=r[2]>0?.003f:0;
-    ui_layer::set_background_region({r[0]-margin,r[1]-margin,r[2]+2*margin,r[3]+2*margin});
+    for (int k = 0; k < 2; ++k) {   // the lifted HUD pieces are painted over with the world behind them in the eye images
+        const float *r = g.scene.picture_rect + 4 * k;
+        const float margin = r[2] > 0 ? .003f : 0;
+        ui_layer::set_background_region(k, {r[0] - margin, r[1] - margin, r[2] + 2 * margin, r[3] + 2 * margin});
+    }
 }
 void install(const FeatureInstall &in) { g.base = in.base; }
 void remove() {
     g.scene.count = 0;
     xr::set_spatial_scene(g.scene);
-    ui_layer::set_background_region({});
+    ui_layer::set_background_region(0, {}), ui_layer::set_background_region(1, {});
     reset_interaction();
     g.playing = false;
     g.vine_start = 0;

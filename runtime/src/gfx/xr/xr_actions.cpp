@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Tracked controller poses and pad actions, sampled only by the headset frame loop.
 #include "xr/xr_internal.h"
+#include "nxrt/config.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -184,8 +185,19 @@ void read_actions() {
         if (l.y >  0.5f) btns |= hid::btn(hid::kBtnUp);
         l = {0, 0};
     }
-    auto deadzone = [](float v) { constexpr float d = 0.15f; return std::fabs(v) <= d ? 0.f : std::copysign((std::fabs(v) - d) / (1.f - d), v); };
-    l.x = deadzone(l.x); l.y = deadzone(l.y); r.x = deadzone(r.x); r.y = deadzone(r.y);
+    // Round dead zone and outer edge: tilt is measured as a whole (diagonals keep their length), and anything past [vr] stick_full of the
+    // way out counts as a full push. Touch sticks seldom report 1.0, and the game picks running or walking from the stick's length, so
+    // without the edge a full push sits on that threshold and the character keeps switching between the two.
+    static const float full = std::clamp(static_cast<float>(nxrt::config_get_double("vr", "stick_full", 0.85)), 0.5f, 1.0f);
+    auto radial = [](XrVector2f v) {
+        constexpr float inner = 0.15f;
+        const float len = std::sqrt(v.x * v.x + v.y * v.y);
+        if (len <= inner) return XrVector2f{0, 0};
+        const float out = std::min((len - inner) / (full - inner), 1.f);
+        return XrVector2f{v.x / len * out, v.y / len * out};
+    };
+    l = radial(l);
+    r = radial(r);
     st.pad_buttons.store(btns, std::memory_order_relaxed);
     st.pad_lx.store(to_stick(l.x), std::memory_order_relaxed);
     st.pad_ly.store(to_stick(l.y), std::memory_order_relaxed);

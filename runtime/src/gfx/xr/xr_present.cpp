@@ -2,6 +2,7 @@
 // Three-slot image handoff. Game queue writes private staging images; only the headset thread touches OpenXR images or its queue.
 #include "xr/xr_internal.h"
 #include "xr/xr_spatial.h"
+#include "nxrt/ui_layer.h"
 #include <algorithm>
 #include <cmath>
 #include "nxrt/log.h"
@@ -182,7 +183,7 @@ namespace { thread_local Tag t_render_tag; }
 void render_set_tag(Tag tag) { t_render_tag = render_resolve_tag(tag); }
 Tag render_tag() { return t_render_tag; }
 
-void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y, VkImage background, const VkRect2D* background_rect) {
+void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFormat source_format, uint32_t source_w, uint32_t source_h, const int32_t crop[4], bool flip_y, const VkImage* background, const VkRect2D* background_rect) {
     State& st = s(); const Tag tag = t_render_tag;
     if (tag.eye < 0 || tag.eye > 1 || !running()) return;
     uint64_t consumed = 0, completed = 0;
@@ -259,10 +260,18 @@ void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFo
             if (!st.sharpener_logged) { st.sharpener_logged = true; NXLOG_I(kTag, "eye sharpening: native %ux%u, RCAS %.2f before headset transfer", w, h, sharpness); }
         }
     }
-    VkRect2D excluded{};
-    if(background_rect){excluded=*background_rect;excluded.offset.x-=x;
-        excluded.offset.y=flip_y?y+static_cast<int32_t>(h)-background_rect->offset.y-static_cast<int32_t>(excluded.extent.height):background_rect->offset.y-y;}
-    spatial_render(device, cb, slot, eye, image, tag, background, excluded, flip_y);
+    // Each lifted UI region in the eye image's coordinates (top-left, inside the crop).
+    VkImage backgrounds[ui_layer::kRegions]{};
+    VkRect2D excluded[ui_layer::kRegions]{};
+    for (int r = 0; background && background_rect && r < ui_layer::kRegions; ++r) {
+        if (!background[r]) continue;
+        backgrounds[r] = background[r];
+        excluded[r] = background_rect[r];
+        excluded[r].offset.x -= x;
+        excluded[r].offset.y = flip_y ? y + static_cast<int32_t>(h) - background_rect[r].offset.y - static_cast<int32_t>(excluded[r].extent.height)
+                                      : background_rect[r].offset.y - y;
+    }
+    spatial_render(device, cb, slot, eye, image, tag, backgrounds, excluded, flip_y);
     st.capture_stage = slot; st.capture_eye = eye; st.capture_tag = tag;
 }
 

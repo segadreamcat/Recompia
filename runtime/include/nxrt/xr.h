@@ -52,8 +52,10 @@ struct SpatialScene {
     static constexpr uint32_t kMaxVertices = 16380;   // two gloves (~10200) plus the wrist display and vine
     SpatialVertex vertices[kMaxVertices];
     uint32_t count = 0;
-    // Optional live picture region, normalised top-left UVs of the presented image. Used only by picture vertices.
-    float picture_rect[4] = {};
+    // Optional live picture regions, normalised top-left rects (x, y, w, h) of the presented image: [0..3] for vertices with picture 1,
+    // [4..7] for picture 2. Picture 2 shows only the pixels the game's 2D changed over the region's background (ui_layer region 1), so an
+    // empty HUD box draws nothing. Vertex UVs are 0..1 within the picture.
+    float picture_rect[8] = {};
 };
 // Reference-space geometry, latched once per stereo pair. Empty clears it; source texture extraction stays on the GPU.
 void set_spatial_scene(const SpatialScene& scene);

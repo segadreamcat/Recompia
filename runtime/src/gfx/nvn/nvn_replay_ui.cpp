@@ -14,7 +14,7 @@ namespace {
 struct Presented {
     static constexpr size_t kSlots = 4;
     Ref<Texture> tex[kSlots];
-    struct Background { gfx::Image image; VkRect2D region{}; bool pending=true, captured=false; } background[kSlots];
+    struct Background { gfx::Image image; VkRect2D region{}; bool pending=true, captured=false; } background[kSlots][ui_layer::kRegions];
     size_t next = 0;
 };
 Presented g_presented;
@@ -23,41 +23,47 @@ Presented g_presented;
 void replay_note_presented(Texture* t) {
     if (!t) return;
     for(size_t i=0;i<Presented::kSlots;++i)
-        if(g_presented.tex[i].get()==t){g_presented.background[i].pending=true;return;}
+        if(g_presented.tex[i].get()==t){for(auto& bg:g_presented.background[i])bg.pending=true;return;}
     const size_t index=g_presented.next++%Presented::kSlots;
-    if(g_presented.background[index].image){device().wait_idle();device().destroy_image(g_presented.background[index].image);}
-    g_presented.background[index]={};
+    for(auto& bg:g_presented.background[index]){
+        if(bg.image){device().wait_idle();device().destroy_image(bg.image);}
+        bg={};
+    }
     g_presented.tex[index]=Ref<Texture>::share(t);
 }
 
 bool replay_ui_background(Texture* t, VkImage* image, VkRect2D* region) {
-    const auto request=ui_layer::background_region();if(request.w<=0||request.h<=0)return false;
-    for(size_t i=0;i<Presented::kSlots;++i){const auto& bg=g_presented.background[i];
-        if(bg.captured&&bg.image&&shares_image(t,g_presented.tex[i].get())){*image=bg.image.image;*region=bg.region;return true;}
+    bool any=false;
+    for(int r=0;r<ui_layer::kRegions;++r){
+        image[r]=VK_NULL_HANDLE;region[r]={};
+        const auto request=ui_layer::background_region(r);if(request.w<=0||request.h<=0)continue;
+        for(size_t i=0;i<Presented::kSlots;++i){const auto& bg=g_presented.background[i][r];
+            if(bg.captured&&bg.image&&shares_image(t,g_presented.tex[i].get())){image[r]=bg.image.image;region[r]=bg.region;any=true;break;}
+        }
     }
-    return false;
+    return any;
 }
 
 namespace replay {
 void ui_capture_background(const ShaderInfo* vs) {
     if(!ui_is_draw(vs)||!F)return;
-    const auto request=ui_layer::background_region();if(request.w<=0||request.h<=0)return;
     Texture* target=S.color_tex[0].get();
-    for(size_t i=0;i<Presented::kSlots;++i){
-        auto& bg=g_presented.background[i];
+    for(size_t i=0;i<Presented::kSlots;++i)for(int r=0;r<ui_layer::kRegions;++r){
+        const auto request=ui_layer::background_region(r);if(request.w<=0||request.h<=0)continue;
+        auto& bg=g_presented.background[i][r];
         if(!bg.pending||!shares_image(target,g_presented.tex[i].get()))continue;
         const auto extent=tex_image_extent(target,0);if(!extent.width||!extent.height)return;
         const int x0=std::clamp(static_cast<int>(std::floor(request.x*extent.width)),0,static_cast<int>(extent.width));
         const int x1=std::clamp(static_cast<int>(std::ceil((request.x+request.w)*extent.width)),x0,static_cast<int>(extent.width));
         const int y0=std::clamp(static_cast<int>(std::floor(request.y*extent.height)),0,static_cast<int>(extent.height));
         const int y1=std::clamp(static_cast<int>(std::ceil((request.y+request.h)*extent.height)),y0,static_cast<int>(extent.height));
-        const uint32_t w=static_cast<uint32_t>(x1-x0),h=static_cast<uint32_t>(y1-y0);if(!w||!h)return;
+        const uint32_t w=static_cast<uint32_t>(x1-x0),h=static_cast<uint32_t>(y1-y0);if(!w||!h)continue;
         const VkFormat format=tex_vk_format(target);
         if(!bg.image||bg.image.extent.width!=w||bg.image.extent.height!=h||bg.image.format!=format){
             if(bg.image){device().wait_idle();device().destroy_image(bg.image);}
             gfx::ImageDesc desc;desc.width=w;desc.height=h;desc.format=format;
             desc.usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;desc.name="UI background patch";
-            if(device().create_image(desc,&bg.image)!=VK_SUCCESS)return;
+            if(device().create_image(desc,&bg.image)!=VK_SUCCESS)continue;
             bg.captured=false;
         }
         end_pass();tex_transition(target,*F,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -72,7 +78,6 @@ void ui_capture_background(const ShaderInfo* vs) {
         b.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;b.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
         vkCmdPipelineBarrier(F->cb,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
         bg.region={{x0,storage_y},{w,h}};bg.captured=true;bg.pending=false;
-        return;
     }
 }
 
@@ -88,7 +93,7 @@ bool ui_is_draw(const ShaderInfo* vs) {
 bool ui_skip_draw(const ShaderInfo* vs) { return ui_layer::hidden() && ui_is_draw(vs); }
 
 void ui_shutdown() {
-    for(auto& bg:g_presented.background)if(bg.image)device().destroy_image(bg.image);
+    for(auto& slot:g_presented.background)for(auto& bg:slot)if(bg.image)device().destroy_image(bg.image);
     g_presented=Presented();
 }
 
