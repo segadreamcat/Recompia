@@ -188,7 +188,7 @@ struct Watch {
 };
 constexpr float kBezel = 1.25f;
 // [vr] watch_size: the watch's outer diameter, bezel included, in metres.
-float watch_size() { static const float v = vr_value("watch_size", 0.042, 0.020, 0.090); return v; }
+float watch_size() { static const float v = vr_value("watch_size", 0.056, 0.020, 0.100); return v; }
 // Wrist cross-section of each glove, hand-local units: centre and half-widths across (X) and through (Z) the wrist.
 constexpr float kWristY = .05f, kWristRx = .25f, kWristRz = .20f;
 constexpr float kWristCx[2] = {-.044f, .046f}, kWristCz[2] = {-.004f, -.0065f};
@@ -245,17 +245,44 @@ void watch(const HandFrame &f, const Watch &w, bool touched) {
     if (touched)   // a small light at the edge while a finger is on the face
         ball(xr::EyeView{}, w.center + w.up * (w.radius * .8f) + w.normal * .002f, {.003f, .003f, .003f}, green);
 }
-// The right wrist band with the Nearby Habitats box lying on it; only the box's own pixels are drawn (picture 2).
-void habitat_band(const HandFrame &f, const Watch &w) {
-    band(f, 1, .022f);
-    const float card_w = vr_value("habitat_card_width", 0.060, 0.03, 0.20) * .5f;
+// The right wrist band with the Nearby Habitats box wrapped along it, reading left to right across the back of the wrist (thumb side to
+// little finger, top toward the fingers); only the box's own pixels are drawn (picture 2).
+void habitat_band(const HandFrame &f) {
+    const float card_w = vr_value("habitat_card_width", 0.070, 0.03, 0.20);   // along the band, metres
     const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
-    const V c = w.center + w.normal * .001f;
-    const V tl = c - w.right * card_w + w.up * card_h, tr = c + w.right * card_w + w.up * card_h;
-    const V bl = c - w.right * card_w - w.up * card_h, br = c + w.right * card_w - w.up * card_h;
+    band(f, 1, card_h + .006f);
+    // the band's outer surface at angle t (t = -pi/2 is the back of the wrist; t falls toward -X, the little finger)
+    const float grow = 1.11f, rx = kWristRx * grow, rz = kWristRz * grow;
+    auto at = [&](float t, float y) { return hand_point(f, {kWristCx[1] + rx * std::cos(t), kWristY + y, kWristCz[1] + rz * std::sin(t)}); };
+    // angle for an arc length s (hand units) from the back of the wrist, stepping along the ellipse
+    constexpr int kSteps = 16;
+    float ts[kSteps + 1];
+    {
+        const float half = card_w * .5f / f.size;
+        float t = -kPi * .5f;
+        // walk back to the thumb-side end first
+        for (float acc = 0; acc < half;) {
+            const float dt = .002f, speed = std::sqrt(rx * rx * std::sin(t) * std::sin(t) + rz * rz * std::cos(t) * std::cos(t));
+            acc += speed * dt, t += dt;
+        }
+        ts[0] = t;
+        const float step = card_w / f.size / kSteps;
+        for (int k = 1; k <= kSteps; ++k) {
+            for (float acc = 0; acc < step;) {
+                const float dt = .002f, speed = std::sqrt(rx * rx * std::sin(t) * std::sin(t) + rz * rz * std::cos(t) * std::cos(t));
+                acc += speed * dt, t -= dt;
+            }
+            ts[k] = t;
+        }
+    }
+    const float hy = card_h * .5f / f.size;
     const Color white{1, 1, 1};
-    triangle(tl, bl, br, white, 2, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
-    triangle(tl, br, tr, white, 2, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
+    for (int k = 0; k < kSteps; ++k) {
+        const float u0 = static_cast<float>(k) / kSteps, u1 = static_cast<float>(k + 1) / kSteps;
+        const V tl = at(ts[k], hy), tr = at(ts[k + 1], hy), bl = at(ts[k], -hy), br = at(ts[k + 1], -hy);
+        triangle(tl, bl, br, white, 2, {u0, 0, 0}, {u0, 1, 0}, {u1, 1, 0});
+        triangle(tl, br, tr, white, 2, {u0, 0, 0}, {u1, 1, 0}, {u1, 0, 0});
+    }
 }
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
@@ -309,7 +336,7 @@ void game_frame(::Ctx *) {
         r[3] = native[3] * scale;
     };
     if (habitats) {
-        habitat_band(right_frame, watch_pose(right_frame, 1));
+        habitat_band(right_frame);
         lift(1, kHabitatRect);
     }
     Watch w{};
