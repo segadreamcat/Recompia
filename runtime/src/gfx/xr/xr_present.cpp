@@ -7,6 +7,13 @@
 #include <cmath>
 #include "nxrt/log.h"
 #include "nxrt/qpc.h"
+#include <atomic>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace nxrt::gfx { bool save_png_rgba(const std::string& path, const uint8_t* rgba, uint32_t w, uint32_t h); }
 
 namespace nxrt::xr::detail {
 namespace {
@@ -31,6 +38,18 @@ void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayou
     b.image = image; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
+// The left-eye screenshot (request_eye_shot): the request, the readback recorded in render_record and the marker value it waits on.
+struct EyeShot {
+    std::mutex m;
+    std::string path;
+    uint64_t requested_ns = 0, ready = 0;
+    bool recorded = false, busy = false;
+    gfx::Device* device = nullptr;
+    gfx::Buffer buffer;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t w = 0, h = 0, crop[4] = {};
+    std::atomic<int> state{0};
+} g_shot;
 void destroy_stage(StageImage& image) {
     if (image.view) vkDestroyImageView(s().vk_device, image.view, nullptr);
     if (image.image) vkDestroyImage(s().vk_device, image.image, nullptr);
@@ -272,6 +291,38 @@ void render_record(gfx::Device& device, VkCommandBuffer cb, VkImage source, VkFo
                                       : background_rect[r].offset.y - y;
     }
     spatial_render(device, cb, slot, eye, image, tag, backgrounds, excluded, flip_y);
+    if (tag.world && eye == 0) {   // a requested left-eye screenshot: copy the finished eye image out (it is in TRANSFER_SRC here)
+        std::lock_guard<std::mutex> shot_lock(g_shot.m);
+        const bool bgra = image.format == VK_FORMAT_B8G8R8A8_SRGB || image.format == VK_FORMAT_B8G8R8A8_UNORM;
+        const bool rgba = image.format == VK_FORMAT_R8G8B8A8_SRGB || image.format == VK_FORMAT_R8G8B8A8_UNORM;
+        if (!g_shot.path.empty() && !g_shot.busy && !g_shot.recorded && (bgra || rgba) &&
+            device.create_buffer(static_cast<VkDeviceSize>(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, gfx::MemoryUse::Readback, &g_shot.buffer,
+                                 "vr eye shot") == VK_SUCCESS) {
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {w, h, 1};
+            vkCmdCopyImageToBuffer(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_shot.buffer.buffer, 1, &region);
+            VkBufferMemoryBarrier hb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; hb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            hb.srcQueueFamilyIndex = hb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hb.buffer = g_shot.buffer.buffer; hb.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &hb, 0, nullptr);
+            g_shot.recorded = true;
+            g_shot.device = &device;
+            g_shot.format = image.format;
+            g_shot.w = w, g_shot.h = h;
+            // the lens's visible region inside the wider rendered picture (tangents: left, right, up, down)
+            uint32_t x0 = 0, x1 = w, y0 = 0, y1 = h;
+            const float fx = tag.fov[1] - tag.fov[0], fy = tag.fov[2] - tag.fov[3];
+            if (tag.fov_ok && fx > 0 && fy > 0) {
+                auto clampu = [](float v, uint32_t n) { return static_cast<uint32_t>(std::clamp(v, 0.f, static_cast<float>(n))); };
+                x0 = clampu((tag.view.tan_left - tag.fov[0]) / fx * w, w), x1 = clampu((tag.view.tan_right - tag.fov[0]) / fx * w, w);
+                y0 = clampu((tag.fov[2] - tag.view.tan_up) / fy * h, h), y1 = clampu((tag.fov[2] - tag.view.tan_down) / fy * h, h);
+                if (x1 <= x0 + 16 || y1 <= y0 + 16) x0 = 0, x1 = w, y0 = 0, y1 = h;
+            }
+            g_shot.crop[0] = x0, g_shot.crop[1] = y0, g_shot.crop[2] = x1 - x0, g_shot.crop[3] = y1 - y0;
+        }
+    }
     st.capture_stage = slot; st.capture_eye = eye; st.capture_tag = tag;
 }
 
@@ -285,6 +336,52 @@ void render_after_submit() {
     VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2}; submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = &signal;
     { std::lock_guard<std::mutex> queue_lock(*st.game_queue_mutex);
       if (vkQueueSubmit2(st.game_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) { give_up("game image marker submit failed"); return; } }
+    {   // a recorded left-eye screenshot: read it back on a worker once this marker has passed
+        std::lock_guard<std::mutex> shot_lock(g_shot.m);
+        if (g_shot.recorded && !g_shot.busy) {
+            g_shot.recorded = false;
+            g_shot.busy = true;
+            g_shot.ready = ready;
+            std::thread([vk = st.vk_device, sem = st.ready]() {
+                std::string path;
+                gfx::Buffer buffer;
+                gfx::Device* device;
+                VkFormat format;
+                uint32_t w, h, crop[4];
+                uint64_t value;
+                {
+                    std::lock_guard<std::mutex> l(g_shot.m);
+                    path = g_shot.path, buffer = g_shot.buffer, device = g_shot.device, format = g_shot.format;
+                    w = g_shot.w, h = g_shot.h, value = g_shot.ready;
+                    std::copy(std::begin(g_shot.crop), std::end(g_shot.crop), crop);
+                }
+                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+                wi.semaphoreCount = 1; wi.pSemaphores = &sem; wi.pValues = &value;
+                bool ok = vkWaitSemaphores(vk, &wi, 5000000000ull) == VK_SUCCESS && buffer.mapped;
+                if (ok) {
+                    device->invalidate_buffer(buffer);
+                    const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+                    const uint8_t* src = static_cast<const uint8_t*>(buffer.mapped);
+                    std::vector<uint8_t> out(static_cast<size_t>(crop[2]) * crop[3] * 4);
+                    for (uint32_t y = 0; y < crop[3]; ++y)
+                        for (uint32_t x = 0; x < crop[2]; ++x) {
+                            const uint8_t* p = src + (static_cast<size_t>(y + crop[1]) * w + x + crop[0]) * 4;
+                            uint8_t* q = out.data() + (static_cast<size_t>(y) * crop[2] + x) * 4;
+                            q[0] = bgra ? p[2] : p[0], q[1] = p[1], q[2] = bgra ? p[0] : p[2], q[3] = 255;
+                        }
+                    ok = gfx::save_png_rgba(path, out.data(), crop[2], crop[3]);
+                    if (ok) NXLOG_I(kTag, "eye screenshot %ux%u written to %s", crop[2], crop[3], path.c_str());
+                }
+                if (!ok) NXLOG_W(kTag, "eye screenshot could not be written");
+                std::lock_guard<std::mutex> l(g_shot.m);
+                device->destroy_buffer(g_shot.buffer);
+                g_shot.buffer = {};
+                g_shot.path.clear();
+                g_shot.busy = false;
+                g_shot.state.store(ok ? 2 : 3);
+            }).detach();
+        }
+    }
     std::lock_guard<std::mutex> lk(st.fm);
     Stage& stage = st.stages[st.capture_stage]; const int eye = st.capture_eye;
     stage.ready_value = ready; stage.written[eye] = true; stage.tags[eye] = st.capture_tag;
@@ -295,3 +392,32 @@ void render_after_submit() {
     st.capture_stage = st.capture_eye = -1;
 }
 } // namespace nxrt::xr
+
+namespace nxrt::xr {
+bool request_eye_shot(const char* png_path) {
+    using detail::g_shot;
+    std::lock_guard<std::mutex> l(g_shot.m);
+    if (!png_path || g_shot.busy || g_shot.recorded || !g_shot.path.empty()) {
+        // a request no world-mode eye took within a second is dropped (a menu or the title is showing)
+        if (!g_shot.busy && !g_shot.recorded && !g_shot.path.empty() && qpc::now_ns() - g_shot.requested_ns > 1000000000ull) {
+            g_shot.path.clear();
+            g_shot.state.store(3);
+        }
+        return false;
+    }
+    g_shot.path = png_path;
+    g_shot.requested_ns = qpc::now_ns();
+    g_shot.state.store(1);
+    return true;
+}
+int eye_shot_state() {
+    using detail::g_shot;
+    std::lock_guard<std::mutex> l(g_shot.m);
+    if (!g_shot.busy && !g_shot.recorded && !g_shot.path.empty() && qpc::now_ns() - g_shot.requested_ns > 1000000000ull) {
+        g_shot.path.clear();
+        g_shot.state.store(3);
+    }
+    return g_shot.state.load();
+}
+}  // namespace nxrt::xr
+

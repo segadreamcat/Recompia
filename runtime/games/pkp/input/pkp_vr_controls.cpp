@@ -19,6 +19,7 @@ struct State {
     bool view_key = false, shot_key = false;
     uint64_t checked_ns = 0, requested_ns = 0;
     std::filesystem::path pending;
+    bool eye = false;   // the pending shot is the headset's left eye (xr::request_eye_shot), else the flat game picture
 } g;
 void capture() {
     if (!g.pending.empty()) return;
@@ -29,7 +30,9 @@ void capture() {
     if (ec) { NXLOG_W("vr", "cannot create screenshot folder: %s", ec.message().c_str()); return; }
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     const auto path = dir / ("VR-" + std::to_string(ms) + ".png");
-    if (!screenshot::request(path.string().c_str(), true)) { notices::post("vr-capture", "Screenshot busy; try again.", 2); return; }
+    // What the headset shows (hands, watch and all) while VR runs; the flat game picture otherwise, or when no eye image comes (a menu).
+    g.eye = xr::running() && xr::request_eye_shot(path.string().c_str());
+    if (!g.eye && !screenshot::request(path.string().c_str(), true)) { notices::post("vr-capture", "Screenshot busy; try again.", 2); return; }
     g.pending = path; g.requested_ns = qpc::now_ns();
     NXLOG_I("vr", "screenshot requested: %s", path.string().c_str());
 }
@@ -53,6 +56,10 @@ void game_frame(::Ctx*) {
     }
     if (commands & xr::kScreenshot) capture();
     const uint64_t now = qpc::now_ns();
+    if (!g.pending.empty() && g.eye && xr::eye_shot_state() == 3) {   // no headset eye image came: take the flat picture instead
+        g.eye = false;
+        if (!screenshot::request(g.pending.string().c_str(), true)) { notices::post("vr-capture", "Screenshot busy; try again.", 2); g.pending.clear(); }
+    }
     if (!g.pending.empty() && now-g.checked_ns > 250000000ull) {
         g.checked_ns = now;
         std::error_code ec;

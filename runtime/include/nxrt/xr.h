@@ -93,6 +93,11 @@ void set_shortcuts_enabled(bool enabled);
 // Contrast-adaptive sharpening of world eye images before headset handoff; 0 disables it.
 void set_sharpness(float amount);
 uint32_t take_commands();
+// A PNG of exactly what the headset shows the left eye (the game picture with the hands, watch and other spatial pieces drawn in, cropped
+// to the lens's visible region). Any thread; the next world-mode eye image is copied and written on a worker. False when one is pending.
+// eye_shot_state: 0 none pending, 1 pending, 2 written, 3 failed or not taken (no world-mode eye within a second: a menu or the title).
+bool request_eye_shot(const char* png_path);
+int eye_shot_state();
 
 // [vr] settings the camera module reads.
 float world_scale();
