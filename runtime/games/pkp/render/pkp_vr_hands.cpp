@@ -18,6 +18,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <string>
 namespace nxrt::games::pkp {
 namespace {
 constexpr float kPi = 3.14159265359f;
@@ -48,6 +50,7 @@ constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
 // the wheel's next / previous at 0x2f9030 change it). Cut is skill 5 (its action is 883).
 constexpr uint64_t kSelectedSkill = 0x3950 + 0x1a;
 constexpr uint8_t kCutSkill = 5;
+constexpr size_t kMoveStateBytes = 0x600;
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
     std::atomic<bool> playing{false};
@@ -58,6 +61,7 @@ struct State {
     V previous, vine_origin, vine_direction;
     uint16_t action = 0;
     uint8_t skill = 0;
+    float morph = 0;   // 0 the gloves, 1 the Cut blades; animated between, Ditto style
     V swing_prev;
     uint64_t swing_time = 0, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -144,7 +148,8 @@ V hand_dir(const HandFrame &f, V p) {
 V hand_point(const HandFrame &f, V p) { return f.origin + hand_dir(f, p * f.size); }
 
 // A cartoon glove. The index finger closes with the trigger, the other fingers with the grip, about the knuckle line. Lit from above.
-void glove(const HandFrame &f, const xr::HandView &h) {
+// squash < 1 pulls the whole glove in toward the middle of the palm (the start of a Ditto morph).
+void glove(const HandFrame &f, const xr::HandView &h, float squash = 1) {
     const vr_glove::Mesh &mesh = f.side ? vr_glove::kRight : vr_glove::kLeft;
     const float index_close = std::clamp(h.trigger, 0.f, 1.f) * 1.4f, close = std::clamp(h.squeeze, 0.f, 1.f) * 1.4f;
     constexpr float kKnuckle = .47f;
@@ -163,6 +168,10 @@ void glove(const HandFrame &f, const xr::HandView &h) {
             const float c = std::cos(bend), sn = std::sin(bend), y = p.y - kKnuckle;
             p = {p.x, kKnuckle + y * c - p.z * sn, y * sn + p.z * c};
             nrm = {nrm.x, nrm.y * c - nrm.z * sn, nrm.y * sn + nrm.z * c};
+        }
+        if (squash < 1) {
+            const V mid{0, .40f, .05f};
+            p = mid + (p - mid) * squash;
         }
         world[i] = hand_point(f, p);
         const float lit = v.shade * (.55f + .55f * std::max(0.f, dot(hand_dir(f, nrm), light)));
@@ -292,21 +301,25 @@ void habitat_band(const HandFrame &f) {
     }
 }
 // Cut: each glove becomes a pale, curved scythe blade (the move borrows Scyther's), from the back of the wrist past the fingertips.
-void blade(const HandFrame &f) {
-    const Color face{.86f, .90f, .74f}, edge{.55f, .66f, .42f}, base{.36f, .52f, .30f};
+// grow 0..1 draws it part way out of the hand, still Ditto purple at the start (the end of a Ditto morph).
+Color mix(Color a, Color b, float t) { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; }
+void blade(const HandFrame &f, float grow = 1) {
+    const Color face = mix(kDitto, {.86f, .90f, .74f}, grow), edge = mix(kDitto, {.55f, .66f, .42f}, grow),
+                base = mix(kDitto, {.36f, .52f, .30f}, grow);
     constexpr int kSeg = 12;
     const float flip = f.side ? 1.f : -1.f;
     // centre line in hand units: up the fingers (+Y), sweeping out over the back of the hand (-Z) and curving toward the thumb side
     // [vr] blade_size: how big the blades are against the glove (1 = about a hand and a half long).
-    static const float k = vr_value("blade_size", 1.7, 0.5, 3.0);
+    static const float size = vr_value("blade_size", 1.7, 0.5, 3.0);
+    const float k = size * std::max(grow, .05f);
     auto spine = [&](float t) { return V{flip * .10f * t * t * k, .05f + 1.35f * t * k, (-.10f - .55f * t * t + .35f * t) * k}; };
     auto width = [&](float t) { return (.20f * (1 - t) * (1 - t * .3f) + .015f) * k; };
     V prev_a{}, prev_b{}, prev_t{};
-    for (int k = 0; k <= kSeg; ++k) {
-        const float t = static_cast<float>(k) / kSeg;
+    for (int seg = 0; seg <= kSeg; ++seg) {
+        const float t = static_cast<float>(seg) / kSeg;
         const V c = spine(t), w = width(t) > 0 ? V{0, 0, width(t)} : V{};
         const V a = hand_point(f, c - w * .35f), b = hand_point(f, c + w), mid = hand_point(f, c + V{flip * .03f, 0, w.z * .3f});
-        if (k) {
+        if (seg) {
             triangle(prev_a, a, prev_t, face), triangle(prev_t, a, mid, face);       // one face, curving through the ridge
             triangle(prev_t, mid, prev_b, edge), triangle(prev_b, mid, b, edge);      // the cutting side
         }
@@ -352,11 +365,56 @@ void game_frame(::Ctx *c) {
     if (skill != g.skill) NXLOG_I("vr", "selected move %u", skill);
     g.skill = skill;
     const bool cutting = skill == kCutSkill;
+    // Finding the game's "a cuttable thing is in reach" state: while Cut is selected, log which bytes of the move state change
+    // (up to 4 times a second), to compare walking up to a tree and away from it.
+    if (cutting && guest::ok(character + 0x3950, kMoveStateBytes)) {
+        static uint8_t prev[kMoveStateBytes];
+        static bool have = false;
+        static uint64_t next = 0;
+        if (now >= next) {
+            next = now + 250000000ull;
+            uint8_t cur[kMoveStateBytes];
+            std::memcpy(cur, reinterpret_cast<const void*>(character + 0x3950), kMoveStateBytes);
+            if (have) {
+                std::string diff;
+                int shown = 0;
+                for (size_t i = 0; i < kMoveStateBytes && shown < 48; ++i)
+                    if (cur[i] != prev[i]) {
+                        char b[24];
+                        std::snprintf(b, sizeof b, " %zx:%02x>%02x", i, prev[i], cur[i]);
+                        diff += b, ++shown;
+                    }
+                if (!diff.empty()) NXLOG_I("vr", "cut probe:%s", diff.c_str());
+            }
+            std::memcpy(prev, cur, kMoveStateBytes);
+            have = true;
+        }
+    }
+    {   // the morph: the glove melts into a purple blob (first half), the blade grows out of it (second half), about a third of a second
+        static uint64_t last = now;
+        const float dt = std::min(static_cast<float>(now - last) * 1e-9f, .1f);
+        last = now;
+        g.morph = std::clamp(g.morph + (cutting ? dt : -dt) / .35f, 0.f, 1.f);
+    }
     if (settings::get_bool(settings::Key::VrHands)) {
-        if (left_frame.valid)
-            cutting ? blade(left_frame) : glove(left_frame, left);
-        if (right_frame.valid)
-            cutting ? blade(right_frame) : glove(right_frame, right);
+        const float m = g.morph;
+        for (int h = 0; h < 2; ++h) {
+            const HandFrame &f = h ? right_frame : left_frame;
+            if (!f.valid) continue;
+            if (m <= 0) {
+                glove(f, h ? right : left);
+                continue;
+            }
+            if (m < .5f) glove(f, h ? right : left, 1 - 1.6f * m);
+            else blade(f, (m - .5f) * 2);
+            // the blob: swells while the hand melts, shrinks as the blade forms
+            const float blob = (m < .5f ? m * 2 : (1 - m) * 2) * .30f * f.size;
+            if (blob > .002f) {
+                xr::EyeView at{};
+                at.pos[0] = 0, at.pos[1] = 0, at.pos[2] = 0;
+                ball(at, hand_point(f, {0, .35f, .02f}), {blob, blob * .9f, blob}, kDitto);
+            }
+        }
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
