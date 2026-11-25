@@ -3,8 +3,6 @@
 // and gameplay remain authoritative.
 #include "render/pkp_vr_hands.h"
 #include "render/pkp_vr_glove_mesh.inc"
-#include "render/pkp_vr_camera.h"
-#include "core/pkp_resident_census.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -60,9 +58,6 @@ struct State {
     V previous, vine_origin, vine_direction;
     uint16_t action = 0;
     uint8_t skill = 0;
-    bool grab_was[2] = {};
-    bool holding[2] = {};        // a picked-up item shown in that hand until it is put away behind the back
-    uint64_t stored_ns[2] = {};  // when one was put away, for the little shrink
     V swing_prev;
     uint64_t swing_time = 0, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -317,19 +312,6 @@ void blade(const HandFrame &f) {
     }
     tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
 }
-// A hand within about 45 cm of a live creature (the petting reach, in the game's centimetres around its body).
-bool hand_near_creature(::Ctx* c, const xr::HandView& hv) {
-    float point[3];
-    if (!vr_camera::reference_point(hv.grip.pos, hv.grip.reference_epoch, point)) return false;
-    resident_census::ActorPosition actors[64];
-    const size_t count = resident_census::actor_positions(c, g.base, actors, 64);
-    for (size_t i = 0; i < count; ++i) {
-        const float dx = point[0] - actors[i].position[0], dz = point[2] - actors[i].position[2];
-        const float dy = point[1] - std::clamp(point[1], actors[i].position[1] + 10.f, actors[i].position[1] + 110.f);
-        if (dx * dx + dy * dy + dz * dz < 45.f * 45.f) return true;
-    }
-    return false;
-}
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
     g.pulse_until = now + 120000000ull;
@@ -373,16 +355,6 @@ void game_frame(::Ctx *c) {
             cutting ? blade(left_frame) : glove(left_frame, left);
         if (right_frame.valid)
             cutting ? blade(right_frame) : glove(right_frame, right);
-    }
-    // a held item: a little cloth bundle in the curled fingers, shrinking away for a moment once put away
-    for (int h = 0; h < 2; ++h) {
-        const xr::HandView &hv = h ? right : left;
-        const double since = g.stored_ns[h] ? static_cast<double>(now - g.stored_ns[h]) * 1e-9 : 1;
-        const float scale = g.holding[h] ? 1.f : since < .25 ? static_cast<float>(1 - since / .25) : 0.f;
-        if (!hv.grip.valid || scale <= 0) continue;
-        const float r = .032f * scale;
-        ball(hv.grip, {0, -.01f, -.035f}, {r, r * .85f, r}, {.86f, .70f, .45f});
-        ball(hv.grip, {0, -.01f + r * .7f, -.035f}, {r * .45f, r * .35f, r * .45f}, {.62f, .38f, .22f});   // the knot
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
@@ -438,48 +410,6 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
-    // Reach and grab: squeezing a grip with that hand reached out (an arm's length ahead or down toward the ground) picks up, as the
-    // game's pick-up button does; the grip's own button (L or R) is held back while the hand is out there.
-    for (int h = 0; h < 2; ++h) {
-        const xr::HandView &hv = h ? right : left;
-        if (!hv.grip.valid) {
-            g.grab_was[h] = false;
-            continue;
-        }
-        const V rel = vec(hv.grip.pos) - vec(head.center);
-        const float out = std::sqrt(rel.x * rel.x + rel.z * rel.z), down = -rel.y;
-        const bool reached = out > vr_value("grab_reach", 0.42, 0.2, 0.8) || down > vr_value("grab_low", 0.80, 0.4, 1.4);
-        const bool held = hv.squeeze > .65f;
-        if (reached) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
-        // Holding: the game took the item into the bag at the grab; the hand keeps a bundle until it goes over the shoulder behind
-        // the head and lets go (put away, a firmer buzz), or lets go anywhere else (it was in the bag all along).
-        if (g.holding[h] && !held) {
-            g.holding[h] = false;
-            V fwd = rotate(head.quat, {0, 0, -1});
-            fwd.y = 0;
-            fwd = norm(fwd);
-            const float behind = -(rel.x * fwd.x + rel.z * fwd.z);
-            if (behind > vr_value("store_behind", 0.02, -0.2, 0.4) && rel.y > -0.45f) {
-                g.stored_ns[h] = now;
-                xr::haptic(h, .7f, .09f);
-                NXLOG_I("vr", "item put away: %s hand", h ? "right" : "left");
-            } else if (hand_near_creature(c, hv)) {
-                // Let go of it at a Pokemon: talk to it (the A button), where the game offers giving it a gift from the bag.
-                g.stored_ns[h] = now;
-                pulse(hid::btn(hid::kBtnA), now);
-                xr::haptic(h, .45f, .06f);
-                NXLOG_I("vr", "item offered to a Pokemon: %s hand", h ? "right" : "left");
-            }
-        }
-        if (reached && held && !g.grab_was[h] && !cutting) {
-            pulse(hid::btn(hid::kBtnY), now);
-            xr::haptic(h, .25f, .03f);
-            g.holding[h] = true;
-            if (h) g.grip_cast = true;   // not a jump on release
-            NXLOG_I("vr", "reach grab: %s hand", h ? "right" : "left");
-        }
-        g.grab_was[h] = held;
-    }
     // Cut by swinging: with Cut selected, a fast swing of either blade sideways or down uses the move.
     if (cutting && right.grip.valid) {
         const V p = vec(right.grip.pos);
