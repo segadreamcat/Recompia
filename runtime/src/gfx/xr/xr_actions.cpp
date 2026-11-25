@@ -159,7 +159,12 @@ void read_actions() {
     if (b(kY)) btns |= hid::btn(hid::kBtnY);
     if (b(kMenu)) btns |= hid::btn(hid::kBtnPlus);
     const bool lc = b(kLClick), rc = b(kRClick);
-    if (lc && rc) btns |= hid::btn(hid::kBtnMinus);
+    // Both sticks pressed and held half a second: Minus (the game's Photo Mode). A brief accidental squeeze of both does nothing.
+    static uint64_t both_ns = 0;
+    const uint64_t now_ns = qpc::now_ns();
+    if (!(lc && rc)) both_ns = 0;
+    else if (!both_ns) both_ns = now_ns;
+    if (lc && rc && now_ns - both_ns > 500000000ull) btns |= hid::btn(hid::kBtnMinus);
     else if (rc && !st.shortcuts_enabled.load()) btns |= hid::btn(hid::kBtnStickR);
     if (fl(kLTrig) > 0.5f) btns |= hid::btn(hid::kBtnZL);
     if (fl(kRTrig) > 0.5f) btns |= hid::btn(hid::kBtnZR);
@@ -174,7 +179,9 @@ void read_actions() {
     if (st.shortcuts_enabled.load(std::memory_order_relaxed)) {
         if (!lc && st.left_click_was && !st.left_click_used && now-st.left_click_ns < 800000000ull)
             st.commands.fetch_or(kScreenshot, std::memory_order_relaxed);
-        if (!rc && st.right_click_was && !st.right_click_used && now-st.right_click_ns < 450000000ull)
+        // First / third person: hold the right stick in for most of a second (a quick press, easy to make by accident while turning,
+        // does nothing).
+        if (!rc && st.right_click_was && !st.right_click_used && now-st.right_click_ns >= 800000000ull && now-st.right_click_ns < 3000000000ull)
             st.commands.fetch_or(kTogglePerspective, std::memory_order_relaxed);
     }
     st.left_click_was = lc; st.right_click_was = rc;

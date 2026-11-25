@@ -61,7 +61,9 @@ struct State {
     uint16_t action = 0;
     uint8_t skill = 0;
     float morph[2] = {};        // per hand: 0 the glove, 1 the Cut blade; animated between, Ditto style
-    uint64_t raised_until[2] = {};   // a hand counts as raised a little after it comes down, so a swing keeps its blade
+    uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
+    uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
+    bool left_grip_was = false;
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -365,15 +367,14 @@ void game_frame(::Ctx *c) {
     if (skill != g.skill) NXLOG_I("vr", "selected move %u", skill);
     g.skill = skill;
     const bool cutting = skill == kCutSkill;
-    {   // the morph: with Cut selected, a hand lifted to about shoulder height (or above) melts into a purple blob and a blade grows
-        // out of it, and back once it has been down a moment; about a third of a second each way
+    {   // the morph: with Cut selected, squeezing a grip melts that hand into a purple blob and a blade grows out of it, and back
+        // a moment after letting go (so a swing that ends with the grip open keeps its blade); about a third of a second each way
         static uint64_t last = now;
         const float dt = std::min(static_cast<float>(now - last) * 1e-9f, .1f);
         last = now;
         for (int h = 0; h < 2; ++h) {
             const xr::HandView &hv = h ? right : left;
-            const bool up = hv.grip.valid && hv.grip.pos[1] > head.center[1] - vr_value("claw_raise", 0.30, 0.0, 0.8);
-            if (cutting && up) g.raised_until[h] = now + 600000000ull;
+            if (cutting && hv.squeeze > .6f) g.raised_until[h] = now + 300000000ull;
             const bool claws = cutting && now < g.raised_until[h];
             g.morph[h] = std::clamp(g.morph[h] + (claws ? dt : -dt) / .35f, 0.f, 1.f);
         }
@@ -452,6 +453,15 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
+    if (cutting && left.grip.valid) {   // left grip: the claw while held; a quick tap is still L
+        capture |= hid::btn(hid::kBtnL);
+        const bool held = left.squeeze > .5f;
+        if (held && !g.left_grip_was) g.left_grip_start = now;
+        if (!held && g.left_grip_was && now - g.left_grip_start < 300000000ull) pulse(hid::btn(hid::kBtnL), now);
+        g.left_grip_was = held;
+    } else {
+        g.left_grip_was = false;
+    }
     // Cut by swinging: a fast swing of either hand while it is a blade uses the move.
     for (int h = 0; h < 2; ++h) {
         const xr::HandView &hv = h ? right : left;
