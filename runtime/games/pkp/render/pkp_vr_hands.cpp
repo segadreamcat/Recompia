@@ -59,6 +59,8 @@ struct State {
     uint16_t action = 0;
     uint8_t skill = 0;
     bool grab_was[2] = {};
+    bool holding[2] = {};        // a picked-up item shown in that hand until it is put away behind the back
+    uint64_t stored_ns[2] = {};  // when one was put away, for the little shrink
     V swing_prev;
     uint64_t swing_time = 0, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -357,6 +359,16 @@ void game_frame(::Ctx *) {
         if (right_frame.valid)
             cutting ? blade(right_frame) : glove(right_frame, right);
     }
+    // a held item: a little cloth bundle in the curled fingers, shrinking away for a moment once put away
+    for (int h = 0; h < 2; ++h) {
+        const xr::HandView &hv = h ? right : left;
+        const double since = g.stored_ns[h] ? static_cast<double>(now - g.stored_ns[h]) * 1e-9 : 1;
+        const float scale = g.holding[h] ? 1.f : since < .25 ? static_cast<float>(1 - since / .25) : 0.f;
+        if (!hv.grip.valid || scale <= 0) continue;
+        const float r = .032f * scale;
+        ball(hv.grip, {0, -.01f, -.035f}, {r, r * .85f, r}, {.86f, .70f, .45f});
+        ball(hv.grip, {0, -.01f + r * .7f, -.035f}, {r * .45f, r * .35f, r * .45f}, {.62f, .38f, .22f});   // the knot
+    }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
     std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
@@ -424,9 +436,24 @@ void game_frame(::Ctx *) {
         const bool reached = out > vr_value("grab_reach", 0.42, 0.2, 0.8) || down > vr_value("grab_low", 0.80, 0.4, 1.4);
         const bool held = hv.squeeze > .65f;
         if (reached) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+        // Holding: the game took the item into the bag at the grab; the hand keeps a bundle until it goes over the shoulder behind
+        // the head and lets go (put away, a firmer buzz), or lets go anywhere else (it was in the bag all along).
+        if (g.holding[h] && !held) {
+            g.holding[h] = false;
+            V fwd = rotate(head.quat, {0, 0, -1});
+            fwd.y = 0;
+            fwd = norm(fwd);
+            const float behind = -(rel.x * fwd.x + rel.z * fwd.z);
+            if (behind > vr_value("store_behind", 0.02, -0.2, 0.4) && rel.y > -0.45f) {
+                g.stored_ns[h] = now;
+                xr::haptic(h, .7f, .09f);
+                NXLOG_I("vr", "item put away: %s hand", h ? "right" : "left");
+            }
+        }
         if (reached && held && !g.grab_was[h] && !cutting) {
             pulse(hid::btn(hid::kBtnY), now);
             xr::haptic(h, .25f, .03f);
+            g.holding[h] = true;
             if (h) g.grip_cast = true;   // not a jump on release
             NXLOG_I("vr", "reach grab: %s hand", h ? "right" : "left");
         }
