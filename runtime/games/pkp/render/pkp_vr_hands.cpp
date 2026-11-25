@@ -3,6 +3,8 @@
 // and gameplay remain authoritative.
 #include "render/pkp_vr_hands.h"
 #include "render/pkp_vr_glove_mesh.inc"
+#include "render/pkp_vr_camera.h"
+#include "core/pkp_resident_census.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -315,6 +317,19 @@ void blade(const HandFrame &f) {
     }
     tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
 }
+// A hand within about 45 cm of a live creature (the petting reach, in the game's centimetres around its body).
+bool hand_near_creature(::Ctx* c, const xr::HandView& hv) {
+    float point[3];
+    if (!vr_camera::reference_point(hv.grip.pos, hv.grip.reference_epoch, point)) return false;
+    resident_census::ActorPosition actors[64];
+    const size_t count = resident_census::actor_positions(c, g.base, actors, 64);
+    for (size_t i = 0; i < count; ++i) {
+        const float dx = point[0] - actors[i].position[0], dz = point[2] - actors[i].position[2];
+        const float dy = point[1] - std::clamp(point[1], actors[i].position[1] + 10.f, actors[i].position[1] + 110.f);
+        if (dx * dx + dy * dy + dz * dz < 45.f * 45.f) return true;
+    }
+    return false;
+}
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
     g.pulse_until = now + 120000000ull;
@@ -326,7 +341,7 @@ void reset_interaction() {
     xr::spatial_input(0, 0, 0);
 }
 void frame(bool playing, double, play::GameFrame *) { g.playing = playing; }
-void game_frame(::Ctx *) {
+void game_frame(::Ctx *c) {
     if (!xr::wanted())
         return;
     const uint64_t now = qpc::now_ns();
@@ -448,6 +463,12 @@ void game_frame(::Ctx *) {
                 g.stored_ns[h] = now;
                 xr::haptic(h, .7f, .09f);
                 NXLOG_I("vr", "item put away: %s hand", h ? "right" : "left");
+            } else if (hand_near_creature(c, hv)) {
+                // Let go of it at a Pokemon: talk to it (the A button), where the game offers giving it a gift from the bag.
+                g.stored_ns[h] = now;
+                pulse(hid::btn(hid::kBtnA), now);
+                xr::haptic(h, .45f, .06f);
+                NXLOG_I("vr", "item offered to a Pokemon: %s hand", h ? "right" : "left");
             }
         }
         if (reached && held && !g.grab_was[h] && !cutting) {
