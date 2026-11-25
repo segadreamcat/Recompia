@@ -96,19 +96,51 @@ void ball(const xr::EyeView &pose, V center, V radius, Color color) {
 }
 // The character's purple, as the game draws it (sRGB 184, 134, 212), in the linear space the eye images are written in.
 constexpr Color kDitto{.479f, .238f, .658f};
-// [vr] hand_size: wrist to fingertip in metres.
-float hand_size() {
-    static const float v = static_cast<float>(std::clamp(nxrt::config_get_double("vr", "hand_size", 0.19), 0.08, 0.40));
-    return v;
+float vr_value(const char* key, double fallback, double lo, double hi) {
+    return static_cast<float>(std::clamp(nxrt::config_get_double("vr", key, fallback), lo, hi));
 }
-// A cartoon glove on a tracked controller: the aim pose orients it (fingers along the pointing ray, back of the hand up), the grip pose
-// places the palm on the handle. Trigger or grip closes the fingers about the knuckle line. Lit once per frame from above.
-void glove(const xr::HandView &h, int side) {
+// [vr] hand_size: wrist to fingertip in metres. hand_roll: degrees the thumbs turn up from palm-down (a relaxed controller grip).
+// hand_pitch: degrees the fingers tip down from the pointing ray.
+float hand_size() { static const float v = vr_value("hand_size", 0.19, 0.08, 0.40); return v; }
+float hand_roll() { static const float v = vr_value("hand_roll", 45.0, -90.0, 90.0) * kPi / 180.f; return v; }
+float hand_pitch() { static const float v = vr_value("hand_pitch", -12.0, -60.0, 60.0) * kPi / 180.f; return v; }
+
+// Where a glove is: the aim pose orients it (fingers along the pointing ray), the grip pose places the palm on the handle.
+struct HandFrame {
+    bool valid = false;
+    int side = 0;
+    V origin;
+    float quat[4] = {0, 0, 0, 1};
+    float size = .19f, roll_c = 1, roll_s = 0, pitch_c = 1, pitch_s = 0;
+};
+HandFrame hand_frame(const xr::HandView &h, int side) {
+    HandFrame f;
+    if (!h.grip.valid) return f;
     const xr::EyeView &orient = h.aim.valid ? h.aim : h.grip;
-    const vr_glove::Mesh &mesh = side ? vr_glove::kRight : vr_glove::kLeft;
-    const float size = hand_size(), close = std::clamp(std::max(h.trigger, h.squeeze), 0.f, 1.f) * 1.4f;
+    f.valid = true;
+    f.side = side;
+    f.size = hand_size();
+    std::copy(std::begin(orient.quat), std::end(orient.quat), f.quat);
+    const float roll = side ? -hand_roll() : hand_roll(), pitch = hand_pitch();
+    f.roll_c = std::cos(roll), f.roll_s = std::sin(roll), f.pitch_c = std::cos(pitch), f.pitch_s = std::sin(pitch);
+    f.origin = vec(h.grip.pos) + rotate(f.quat, V{0, .02f, .30f * f.size});
+    return f;
+}
+// A hand-local direction (fingers +Y, palm +Z) in the aim pose's frame: X -> -X, +Y -> -Z (forward), +Z -> -Y (palm down), then the roll
+// about the pointing ray and the pitch about the hand's side axis.
+V hand_dir(const HandFrame &f, V p) {
+    V a{-p.x, -p.z, -p.y};
+    a = {a.x * f.roll_c - a.y * f.roll_s, a.x * f.roll_s + a.y * f.roll_c, a.z};
+    a = {a.x, a.y * f.pitch_c - a.z * f.pitch_s, a.y * f.pitch_s + a.z * f.pitch_c};
+    return rotate(f.quat, a);
+}
+V hand_point(const HandFrame &f, V p) { return f.origin + hand_dir(f, p * f.size); }
+
+// A cartoon glove. The index finger closes with the trigger, the other fingers with the grip, about the knuckle line. Lit from above.
+void glove(const HandFrame &f, const xr::HandView &h) {
+    const vr_glove::Mesh &mesh = f.side ? vr_glove::kRight : vr_glove::kLeft;
+    const float index_close = std::clamp(h.trigger, 0.f, 1.f) * 1.4f, close = std::clamp(h.squeeze, 0.f, 1.f) * 1.4f;
     constexpr float kKnuckle = .47f;
-    const V origin = vec(h.grip.pos) + rotate(orient.quat, V{0, .02f, .30f * size});
     const V light = norm(V{-.4f, 1, .3f});
     auto &s = g.scene;
     if (s.count + mesh.index_count > xr::SpatialScene::kMaxVertices)
@@ -119,15 +151,14 @@ void glove(const xr::HandView &h, int side) {
     for (uint32_t i = 0; i < n; ++i) {
         const auto &v = mesh.vertices[i];
         V p{v.pos[0], v.pos[1], v.pos[2]}, nrm{v.normal[0], v.normal[1], v.normal[2]};
-        if (v.curl > 0 && close > 0) {   // fingers fold toward the palm (+Z) about the knuckle line
-            const float a = close * v.curl, c = std::cos(a), sn = std::sin(a), y = p.y - kKnuckle;
+        const float bend = v.curl * (v.index ? index_close : close);
+        if (bend > 0) {   // toward the palm (+Z) about the knuckle line
+            const float c = std::cos(bend), sn = std::sin(bend), y = p.y - kKnuckle;
             p = {p.x, kKnuckle + y * c - p.z * sn, y * sn + p.z * c};
             nrm = {nrm.x, nrm.y * c - nrm.z * sn, nrm.y * sn + nrm.z * c};
         }
-        // hand-local to the aim pose: X -> -X, fingers +Y -> -Z (forward), palm +Z -> -Y (down)
-        world[i] = origin + rotate(orient.quat, V{-p.x, -p.z, -p.y} * size);
-        const V wn = rotate(orient.quat, V{-nrm.x, -nrm.z, -nrm.y});
-        const float lit = v.shade * (.55f + .55f * std::max(0.f, dot(wn, light)));
+        world[i] = hand_point(f, p);
+        const float lit = v.shade * (.55f + .55f * std::max(0.f, dot(hand_dir(f, nrm), light)));
         shade[i] = {kDitto.r * lit, kDitto.g * lit, kDitto.b * lit};
     }
     for (uint32_t t = 0; t + 2 < mesh.index_count; t += 3) {
@@ -140,34 +171,61 @@ void glove(const xr::HandView &h, int side) {
         }
     }
 }
+// The right index fingertip, straight or pulled in by the trigger.
+V index_tip(const HandFrame &f, float trigger) {
+    const float *t = (f.side ? vr_glove::kRight : vr_glove::kLeft).index_tip;
+    V p{t[0], t[1], t[2]};
+    const float a = std::clamp(trigger, 0.f, 1.f) * 1.4f, c = std::cos(a), sn = std::sin(a), y = p.y - .47f;
+    return hand_point(f, {p.x, .47f + y * c - p.z * sn, y * sn + p.z * c});
+}
+// A wristwatch on the back of the left glove's wrist: a band around the wrist and a round face showing the native move wheel. Face axes:
+// right toward the fingers, up toward the little finger, normal out of the back of the hand (readable with the forearm across the body).
 struct Watch {
     V center, right, up, normal;
+    float radius = .022f;
 };
-Watch watch_pose(const xr::EyeView &p) {
-    return {vec(p.pos) + rotate(p.quat, {-.045f, .10f, 0}), rotate(p.quat, {0, 0, -1}), rotate(p.quat, {0, -1, 0}), rotate(p.quat, {-1, 0, 0})};
+float watch_radius() { static const float v = vr_value("watch_size", 0.022, 0.010, 0.060); return v; }
+// Wrist cross-section of the left glove, hand-local units: centre and half-widths across (X) and through (Z) the wrist.
+constexpr float kWristY = .05f, kWristCx = -.044f, kWristCz = -.005f, kWristRx = .25f, kWristRz = .20f;
+Watch watch_pose(const HandFrame &f) {
+    Watch w;
+    w.radius = watch_radius();
+    const float lift = .012f / f.size;   // the face sits on the band, just off the back of the wrist
+    w.center = hand_point(f, {kWristCx, kWristY, kWristCz - kWristRz - lift});
+    w.right = norm(hand_dir(f, {0, 1, 0}));
+    w.up = norm(hand_dir(f, {1, 0, 0}));
+    w.normal = norm(hand_dir(f, {0, 0, -1}));
+    return w;
 }
-void watch(const Watch &w, bool touched) {
-    const V center = w.center;
-    const float radius = .073f;
-    tube(center - w.normal * .018f, center, radius * .94f, radius, black, false);
-    for(int i=0;i<36;++i){
-        float a=2*kPi*i/36,b=2*kPi*(i+1)/36;
-        V p=w.right*std::cos(a)+w.up*std::sin(a),q=w.right*std::cos(b)+w.up*std::sin(b);
-        triangle(center+p*radius,center+q*radius,center+q*(radius*.91f),black);
-        triangle(center+p*radius,center+q*(radius*.91f),center+p*(radius*.91f),black);
+void watch(const HandFrame &f, const Watch &w, bool touched) {
+    const Color band{.05f, .05f, .07f}, bezel{.10f, .10f, .12f}, white{1, 1, 1};
+    // band: an elliptical strip around the wrist, slightly outside the glove
+    constexpr int kBand = 24;
+    const float half = .009f / f.size, grow = 1.08f;
+    for (int i = 0; i < kBand; ++i) {
+        const float a = 2 * kPi * i / kBand, b = 2 * kPi * (i + 1) / kBand;
+        auto at = [&](float t, float dy) {
+            return hand_point(f, {kWristCx + kWristRx * grow * std::cos(t), kWristY + dy, kWristCz + kWristRz * grow * std::sin(t)});
+        };
+        const float light = .7f + .3f * std::max(0.f, -std::sin(a));
+        const Color c{band.r * light, band.g * light, band.b * light};
+        triangle(at(a, -half), at(b, -half), at(b, half), c);
+        triangle(at(a, -half), at(b, half), at(a, half), c);
     }
-    const Color white{1, 1, 1};
-    // Native move wheel, including its icon, name and selection animation, on a
-    // circular wrist face.
-    for (int i = 0; i < 36; ++i) {
-        float a = 2 * kPi * i / 36, b = 2 * kPi * (i + 1) / 36;
-        V p = w.right * std::cos(a) + w.up * std::sin(a), q = w.right * std::cos(b) + w.up * std::sin(b);
-        triangle(center + w.normal * .001f, center + p * (radius * .91f) + w.normal * .001f,
-                 center + q * (radius * .91f) + w.normal * .001f, white, 1, {.5f, .5f, 0},
+    // bezel: a short cylinder and a rim, then the face
+    tube(w.center - w.normal * .006f, w.center, w.radius * 1.08f, w.radius * 1.08f, bezel, false);
+    constexpr int kRing = 32;
+    for (int i = 0; i < kRing; ++i) {
+        const float a = 2 * kPi * i / kRing, b = 2 * kPi * (i + 1) / kRing;
+        const V p = w.right * std::cos(a) + w.up * std::sin(a), q = w.right * std::cos(b) + w.up * std::sin(b);
+        triangle(w.center + p * (w.radius * 1.08f), w.center + q * (w.radius * 1.08f), w.center + q * w.radius, bezel);
+        triangle(w.center + p * (w.radius * 1.08f), w.center + q * w.radius, w.center + p * w.radius, bezel);
+        const V z = w.normal * .0005f;
+        triangle(w.center + z, w.center + p * w.radius + z, w.center + q * w.radius + z, white, 1, {.5f, .5f, 0},
                  {.5f + .5f * std::cos(a), .5f - .5f * std::sin(a), 0}, {.5f + .5f * std::cos(b), .5f - .5f * std::sin(b), 0});
     }
-    if (touched)
-        ball(xr::EyeView{}, {center.x, center.y, center.z}, {.006f, .006f, .006f}, green);
+    if (touched)   // a small light at the edge while a finger is on the face
+        ball(xr::EyeView{}, w.center + w.up * (w.radius * .8f) + w.normal * .002f, {.003f, .003f, .003f}, green);
 }
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
@@ -201,43 +259,47 @@ void game_frame(::Ctx *) {
         reset_interaction();
         g.vine_start = 0;
     }
+    const HandFrame left_frame = hand_frame(left, 0), right_frame = hand_frame(right, 1);
     if (settings::get_bool(settings::Key::VrHands)) {
-        if (left.grip.valid)
-            glove(left, 0);
-        if (right.grip.valid)
-            glove(right, 1);
+        if (left_frame.valid)
+            glove(left_frame, left);
+        if (right_frame.valid)
+            glove(right_frame, right);
     }
-    const bool wrist = settings::get_bool(settings::Key::VrWrist) && left.grip.valid;
-    bool within_reach = false;
-    float x = 0;
+    const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     Watch w{};
     if (wrist) {
-        w = watch_pose(left.grip);
-        if (right.grip.valid) {
-            V finger = vec(right.grip.pos) + rotate(right.grip.quat, {.005f, -.10f, -.025f});
-            V delta = finger - w.center;
+        // Smartwatch scrolling: rest the right index fingertip on the face and slide it toward the fingers (next move) or the elbow
+        // (previous move); every 2 cm of slide is one step, with a tick on the right controller.
+        w = watch_pose(left_frame);
+        bool on_face = false;
+        float x = 0;
+        if (right_frame.valid) {
+            const V delta = index_tip(right_frame, right.trigger) - w.center;
+            const float depth = dot(delta, w.normal);
             x = dot(delta, w.right);
-            within_reach = std::fabs(x) < .14f && std::fabs(dot(delta, w.up)) < .09f && std::fabs(dot(delta, w.normal)) < .085f &&
-                           dot(w.normal, norm(vec(head.center) - w.center)) > .15f;
+            const float y = dot(delta, w.up);
+            on_face = depth > -.015f && depth < .025f && x * x + y * y < (w.radius * 1.7f) * (w.radius * 1.7f) &&
+                      dot(w.normal, norm(vec(head.center) - w.center)) > .1f;
         }
-        const bool pressed = right.trigger > .35f;
-        if (within_reach && pressed && !g.touching) {
+        if (on_face && !g.touching) {
             g.touching = true;
-            g.swiped = false;
             g.swipe_x = x;
-        }
-        if (!pressed || !right.grip.valid || !within_reach) {
+            xr::haptic(1, .05f, .01f);
+        } else if (!on_face) {
             g.touching = false;
-            g.swiped = false;
         }
-        if (g.touching && !g.swiped && std::fabs(x - g.swipe_x) > .045f) {
-            pulse(hid::btn(x > g.swipe_x ? hid::kBtnRight : hid::kBtnLeft), now);
-            g.swiped = true;
-            g.cooldown = now + 500000000ull;
-            xr::haptic(1, .10f, .02f);
-            NXLOG_I("vr", "wrist swipe: %s", x > g.swipe_x ? "next move" : "previous move");
+        constexpr float kStep = .02f;
+        if (g.touching && std::fabs(x - g.swipe_x) > kStep && now >= g.cooldown) {
+            const bool next = x > g.swipe_x;
+            pulse(hid::btn(next ? hid::kBtnRight : hid::kBtnLeft), now);
+            g.swipe_x += next ? kStep : -kStep;
+            g.cooldown = now + 180000000ull;
+            g.whip_armed = false;
+            xr::haptic(1, .12f, .02f);
+            NXLOG_I("vr", "wrist swipe: %s", next ? "next move" : "previous move");
         }
-        watch(w, g.touching);
+        watch(left_frame, w, g.touching);
         // Native 16:9 HUD wheel bounds in the square render, transformed by the
         // user's whole-HUD inset.
         const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
@@ -247,7 +309,7 @@ void game_frame(::Ctx *) {
         g.scene.picture_rect[2] = native[2] * scale;
         g.scene.picture_rect[3] = native[3] * scale;
     } else {
-        g.touching = g.swiped = false;
+        g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
     const uint64_t manager = guest::deref(g.base + layout::kPlayerManager), player = guest::deref(manager + layout::kManagerPlayer),
@@ -293,7 +355,7 @@ void game_frame(::Ctx *) {
             g.whip_armed = false;
             g.cast_start = 0;
         } else {
-            if (!g.whip_armed && reach < .16f) {
+            if (!g.whip_armed && reach < .28f) {
                 g.whip_armed = true;
                 g.pull = reach;
                 g.cast_start = now;
@@ -303,7 +365,7 @@ void game_frame(::Ctx *) {
                 const float speed = dt > .003 && dt < .1 ? dot(relative - g.previous, forward) / static_cast<float>(dt) : 0;
                 if (now - g.cast_start > 1200000000ull)
                     g.whip_armed = false;
-                else if (reach - g.pull > .20f && speed > 1.6f) {
+                else if (reach - g.pull > .15f && speed > 1.2f) {
                     pulse(hid::btn(hid::kBtnZR), now);
                     g.cooldown = now + 900000000ull;
                     g.whip_armed = false;
