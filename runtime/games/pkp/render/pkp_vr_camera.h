@@ -13,6 +13,9 @@ bool owns_projection(uint64_t camera);
 bool aim_ray(float eye[3], float direction[3]);
 // A tracked LOCAL point transformed with the current first-person anchor and yaw.
 bool reference_point(const float point[3], uint64_t epoch, float world[3]);
+// While the player holds the backpack or the camera (pkp_vr_hands), the bag and Photo Mode stay in the 3D world instead of the flat
+// reading panel: their screens are drawn on the thing in the hand.
+void hold_world(bool on);
 }
 
 }  // namespace nxrt::games::pkp

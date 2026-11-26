@@ -3,6 +3,7 @@
 // and gameplay remain authoritative.
 #include "render/pkp_vr_hands.h"
 #include "render/pkp_vr_glove_mesh.inc"
+#include "render/pkp_vr_camera.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -64,8 +65,10 @@ struct State {
     uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
     uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
     bool shoulder_was[2] = {};       // that grip was already squeezed (no new over-the-shoulder pull until it opens)
-    int shoulder_prop[2] = {};       // what that hand reaches for or just pulled out: 0 nothing, 1 the camera, 2 the backpack
-    uint64_t pulled_ns[2] = {};
+    int shoulder_prop[2] = {};       // what that hand reaches for: 0 nothing, 1 the camera, 2 the backpack
+    int held = 0, held_hand = 0;     // the camera (1) or backpack (2) in hand, held while its grip stays squeezed
+    uint64_t held_ns = 0;
+    bool menu_seen = false, trigger_was = false;
     bool left_grip_was = false;
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
@@ -376,6 +379,8 @@ void reset_interaction() {
     g.touching = g.swiped = g.whip_armed = false;
     g.time = g.pulse_until = g.grip_start = 0;
     g.grip_was = g.grip_cast = false;
+    if (g.held) vr_camera::hold_world(false);
+    g.held = 0;
     xr::spatial_input(0, 0, 0);
 }
 void frame(bool playing, double, play::GameFrame *) { g.playing = playing; }
@@ -388,7 +393,7 @@ void game_frame(::Ctx *c) {
     const auto head = xr::head_view();
     const auto left = xr::hand_view(0), right = xr::hand_view(1);
     const bool active =
-        xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) && !menu_has_selection();
+        xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) && (g.held || !menu_has_selection());
     if (!active) {
         reset_interaction();
         xr::set_spatial_scene(g.scene);
@@ -437,6 +442,15 @@ void game_frame(::Ctx *c) {
                 ball(at, hand_point(f, {0, .35f, .02f}), {blob, blob * .9f, blob}, kDitto);
             }
         }
+    }
+    // what the hands hold or reach for
+    for (int h = 0; h < 2; ++h) {
+        const xr::HandView &hv = h ? right : left;
+        if (!hv.grip.valid) continue;
+        const int prop = g.held && g.held_hand == h ? g.held : g.shoulder_prop[h];
+        if (!prop) continue;
+        const float k = g.held && g.held_hand == h ? 1.f : .6f;
+        prop == 1 ? camera_prop(hv.grip, k) : backpack(hv.grip, k);
     }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
     const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
@@ -492,41 +506,65 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
-    // Over the shoulder: a hand reached up behind the head and squeezed pulls something out into that hand. Behind the left
-    // shoulder the camera (Photo Mode, Minus), behind the right shoulder the backpack (the bag, X); the game's screen for it is
-    // held in the hand until it closes. The grip's own button is held back while the hand is back there.
+    // Over the shoulder: a hand reached up behind the head and squeezed pulls something out and holds it while the grip stays shut.
+    // Behind the left shoulder the camera (Photo Mode, Minus), behind the right shoulder the backpack (the bag, X). The game stays in
+    // the 3D world while it is held, and its screen is drawn on the thing: the bag's items above the open backpack, the camera's
+    // view on the camera's back screen. That hand's trigger takes the photo (A). Letting go puts it away (B closes the screen).
     {
         V fwd = rotate(head.quat, {0, 0, -1}), side = rotate(head.quat, {1, 0, 0});
         fwd.y = side.y = 0;
         fwd = norm(fwd), side = norm(side);
         for (int h = 0; h < 2; ++h) {
             const xr::HandView &hv = h ? right : left;
-            const bool held = hv.squeeze > .6f;
+            const bool squeezed = hv.squeeze > .6f;
+            g.shoulder_prop[h] = 0;
             if (!hv.grip.valid) {
-                g.shoulder_was[h] = held;
+                g.shoulder_was[h] = squeezed;
                 continue;
             }
             const V rel = vec(hv.grip.pos) - vec(head.center);
             const float behind = -(rel.x * fwd.x + rel.z * fwd.z), across = rel.x * side.x + rel.z * side.z;
-            const bool there = behind > vr_value("shoulder_behind", 0.06, -0.3, 0.3) && rel.y > -0.35f && rel.y < 0.35f;
-            if (there) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
-            const bool recent = now - g.pulled_ns[h] < 900000000ull;
-            if (!recent) g.shoulder_prop[h] = there ? (across < 0 ? 1 : 2) : 0;
-            if (there && held && !g.shoulder_was[h]) {
-                const bool camera = across < 0;
-                pulse(hid::btn(camera ? hid::kBtnMinus : hid::kBtnX), now);
-                xr::hold_panel(h, static_cast<float>(camera ? vr_value("camera_width", 0.22, 0.08, 0.8) : vr_value("backpack_width", 0.42, 0.1, 1.2)));
-                xr::haptic(h, .5f, .07f);
-                g.pulled_ns[h] = now;
-                g.shoulder_prop[h] = camera ? 1 : 2;
-                if (h) g.grip_cast = true;   // not a jump on release
-                NXLOG_I("vr", "over the shoulder: %s from behind the %s shoulder", camera ? "camera" : "backpack", camera ? "left" : "right");
+            const bool there = !g.held && behind > vr_value("shoulder_behind", 0.06, -0.3, 0.3) && rel.y > -0.35f && rel.y < 0.35f;
+            if (there) {
+                capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+                g.shoulder_prop[h] = across < 0 ? 1 : 2;
             }
-            g.shoulder_was[h] = held;
-            // the thing itself: a small one appears as the hand reaches back, full size once pulled out
-            if (g.shoulder_prop[h]) {
-                const float k = now - g.pulled_ns[h] < 900000000ull ? 1.f : .6f;
-                g.shoulder_prop[h] == 1 ? camera_prop(hv.grip, k) : backpack(hv.grip, k);
+            if (there && squeezed && !g.shoulder_was[h]) {
+                g.held = across < 0 ? 1 : 2;
+                g.held_hand = h;
+                g.held_ns = now;
+                g.menu_seen = false;
+                g.trigger_was = hv.trigger > .5f;
+                pulse(hid::btn(g.held == 1 ? hid::kBtnMinus : hid::kBtnX), now);
+                vr_camera::hold_world(true);
+                xr::haptic(h, .5f, .07f);
+                if (h) g.grip_cast = true;   // not a jump on release
+                NXLOG_I("vr", "over the shoulder: %s out", g.held == 1 ? "camera" : "backpack");
+            }
+            g.shoulder_was[h] = squeezed;
+        }
+        if (g.held) {
+            const xr::HandView &hv = g.held_hand ? right : left;
+            capture |= hid::btn(g.held_hand ? hid::kBtnR : hid::kBtnL);
+            if (g.held == 1) {   // the shutter: that hand's trigger
+                capture |= hid::btn(g.held_hand ? hid::kBtnZR : hid::kBtnZL);
+                const bool pressed = hv.trigger > .5f;
+                if (pressed && !g.trigger_was && now - g.held_ns > 600000000ull) {
+                    pulse(hid::btn(hid::kBtnA), now);
+                    xr::haptic(g.held_hand, .6f, .05f);
+                    NXLOG_I("vr", "camera: photo");
+                }
+                g.trigger_was = pressed;
+            }
+            const bool menu = menu_has_selection();
+            if (menu) g.menu_seen = true;
+            const bool closed_by_game = g.held == 2 && g.menu_seen && !menu && now - g.held_ns > 1000000000ull;
+            if (!hv.grip.valid || hv.squeeze < .35f || closed_by_game) {
+                if (!closed_by_game) pulse(hid::btn(hid::kBtnB), now);
+                xr::haptic(g.held_hand, .3f, .04f);
+                NXLOG_I("vr", "over the shoulder: %s put away", g.held == 1 ? "camera" : "backpack");
+                g.held = 0;
+                vr_camera::hold_world(false);
             }
         }
     }
@@ -631,6 +669,35 @@ void game_frame(::Ctx *c) {
     }
     xr::spatial_input(now < g.pulse_until ? g.pulse : 0, capture, now + 150000000ull);
     xr::set_spatial_scene(g.scene);
+    if (g.held) {   // the held thing's screen: the whole HUD band of the picture
+        const xr::HandView &hv = g.held_hand ? right : left;
+        const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
+        const float hud[4] = {.5f - .5f * scale, .5f + (.21875f - .5f) * scale, scale, .5625f * scale};
+        std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
+        const Color white{1, 1, 1};
+        if (g.held == 1 && hv.grip.valid) {
+            // the camera's back screen: the whole view with Photo Mode's frame and buttons, just behind the body, facing back
+            std::copy(hud, hud + 4, g.scene.picture_rect);
+            const float w = vr_value("camera_screen", 0.16, 0.05, 0.6) * .5f, hh = w * 9 / 16;
+            const V c = at_pose(hv.grip, {0, .01f, -.030f});
+            const V r = rotate(hv.grip.quat, {1, 0, 0}), u = rotate(hv.grip.quat, {0, 1, 0});
+            const V tl = c - r * w + u * hh, tr = c + r * w + u * hh, bl = c - r * w - u * hh, br = c + r * w - u * hh;
+            triangle(tl, bl, br, white, 1, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
+            triangle(tl, br, tr, white, 1, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
+        } else if (g.held == 2 && hv.grip.valid) {
+            // the bag's screen: only what the menu draws, floating just above the backpack and turned to the eyes
+            std::copy(hud, hud + 4, g.scene.picture_rect + 4);
+            const float w = vr_value("backpack_screen", 0.50, 0.1, 1.5) * .5f, hh = w * 9 / 16;
+            const V c = vec(hv.grip.pos) + V{0, .06f + hh, 0};
+            V to = vec(head.center) - c;
+            to.y = 0;
+            to = norm(to);
+            const V r = norm(cross(V{0, 1, 0}, to)), u{0, 1, 0};
+            const V tl = c - r * w + u * hh, tr = c + r * w + u * hh, bl = c - r * w - u * hh, br = c + r * w - u * hh;
+            triangle(tl, bl, br, white, 2, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
+            triangle(tl, br, tr, white, 2, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
+        }
+    }
     for (int k = 0; k < 2; ++k) {   // the lifted HUD pieces are painted over with the world behind them in the eye images
         const float *r = g.scene.picture_rect + 4 * k;
         const float margin = r[2] > 0 ? .003f : 0;

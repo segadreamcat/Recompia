@@ -28,6 +28,7 @@
 #include "nxrt/xr.h"
 
 namespace nxrt::games::pkp {
+namespace { std::atomic<bool> g_hold_world{false}; }
 namespace {
 
 constexpr const char* kTag = "vr";
@@ -320,7 +321,7 @@ void game_frame(::Ctx* c) {
     const bool locked = (input_flags & layout::kInputLockBit) != 0;
     // The reading-panel preference applies to selectable screens and tutorial popups too. Opening the bag must not force
     // a mode change when the player chose to stay in the world.
-    if (world && settings::get_bool(settings::Key::VrAutoReading) &&
+    if (world && settings::get_bool(settings::Key::VrAutoReading) && !g_hold_world.load(std::memory_order_relaxed) &&
         ((follow && (input_flags & 0x08)) || g.selection_menu.load(std::memory_order_relaxed) ||
          !g.playing.load(std::memory_order_relaxed) || !play_camera_free() || locked)) world = false;
     g.scripted = scene && !follow;
@@ -377,6 +378,7 @@ bool vr_camera::owns_projection(uint64_t camera) {
     return g.valid && g.eye_in_view.load(std::memory_order_relaxed) >= 0 && camera == view_block0();
 }
 
+void vr_camera::hold_world(bool on) { g_hold_world.store(on, std::memory_order_relaxed); }
 bool vr_camera::reference_point(const float point[3], uint64_t epoch, float world[3]) {
     if (!g.valid || !g.world || !g.first_person || !g.latched || epoch != g.reference_epoch) return false;
     const V3 p = add(g.anchor, yaw(scale(V3{point[0]-g.origin[0], point[1]-g.origin[1], point[2]-g.origin[2]}, xr::world_scale()), g.yaw_s, g.yaw_c));
