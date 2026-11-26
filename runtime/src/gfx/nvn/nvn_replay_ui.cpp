@@ -14,7 +14,7 @@ namespace {
 struct Presented {
     static constexpr size_t kSlots = 4;
     Ref<Texture> tex[kSlots];
-    struct Background { gfx::Image image; VkRect2D region{}; bool pending=true, captured=false; } background[kSlots][ui_layer::kRegions];
+    struct Background { gfx::Image image; VkRect2D region{}; bool pending=true, captured=false, fresh=false, current=false; } background[kSlots][ui_layer::kRegions];
     size_t next = 0;
 };
 Presented g_presented;
@@ -23,7 +23,9 @@ Presented g_presented;
 void replay_note_presented(Texture* t) {
     if (!t) return;
     for(size_t i=0;i<Presented::kSlots;++i)
-        if(g_presented.tex[i].get()==t){for(auto& bg:g_presented.background[i])bg.pending=true;return;}
+        // only a background taken in the frame just presented may be painted back: a frame without any 2D leaves an older one, which
+        // no longer matches the picture
+        if(g_presented.tex[i].get()==t){for(auto& bg:g_presented.background[i]){bg.current=bg.fresh;bg.fresh=false;bg.pending=true;}return;}
     const size_t index=g_presented.next++%Presented::kSlots;
     for(auto& bg:g_presented.background[index]){
         if(bg.image){device().wait_idle();device().destroy_image(bg.image);}
@@ -38,7 +40,7 @@ bool replay_ui_background(Texture* t, VkImage* image, VkRect2D* region) {
         image[r]=VK_NULL_HANDLE;region[r]={};
         const auto request=ui_layer::background_region(r);if(request.w<=0||request.h<=0)continue;
         for(size_t i=0;i<Presented::kSlots;++i){const auto& bg=g_presented.background[i][r];
-            if(bg.captured&&bg.image&&shares_image(t,g_presented.tex[i].get())){image[r]=bg.image.image;region[r]=bg.region;any=true;break;}
+            if(bg.captured&&bg.current&&bg.image&&shares_image(t,g_presented.tex[i].get())){image[r]=bg.image.image;region[r]=bg.region;any=true;break;}
         }
     }
     return any;
@@ -77,7 +79,7 @@ void ui_capture_background(const ShaderInfo* vs) {
         vkCmdCopyImage(F->cb,tex_image(target),VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,bg.image.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
         b.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;b.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
         vkCmdPipelineBarrier(F->cb,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
-        bg.region={{x0,storage_y},{w,h}};bg.captured=true;bg.pending=false;
+        bg.region={{x0,storage_y},{w,h}};bg.captured=true;bg.fresh=true;bg.pending=false;
     }
 }
 

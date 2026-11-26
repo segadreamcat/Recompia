@@ -277,28 +277,36 @@ void watch(const HandFrame &f, const Watch &w, bool touched) {
 // grow 0..1 draws it part way out of the hand, still Ditto purple at the start (the end of a Ditto morph).
 Color mix(Color a, Color b, float t) { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; }
 void blade(const HandFrame &f, float grow = 1) {
-    const Color face = mix(kDitto, {.86f, .90f, .74f}, grow), edge = mix(kDitto, {.55f, .66f, .42f}, grow),
-                base = mix(kDitto, {.36f, .52f, .30f}, grow);
-    constexpr int kSeg = 12;
-    const float flip = f.side ? 1.f : -1.f;
-    // centre line in hand units: up the fingers (+Y), sweeping out over the back of the hand (-Z) and curving toward the thumb side
-    // [vr] blade_size: how big the blades are against the glove (1 = about a hand and a half long).
+    // Scyther's scythe: a broad, flat sickle rising from the back of the wrist over the fingers and hooking down toward the palm side;
+    // a pale silver face, a green ridge along its outer edge and a green cuff where it leaves the arm.
+    const Color face = mix(kDitto, {.90f, .92f, .95f}, grow), shade = mix(kDitto, {.70f, .74f, .80f}, grow),
+                ridge = mix(kDitto, {.42f, .72f, .30f}, grow), cuff = mix(kDitto, {.36f, .62f, .26f}, grow);
     static const float size = vr_value("blade_size", 1.7, 0.5, 3.0);
     const float k = size * std::max(grow, .05f);
-    auto spine = [&](float t) { return V{flip * .10f * t * t * k, .05f + 1.35f * t * k, (-.10f - .55f * t * t + .35f * t) * k}; };
-    auto width = [&](float t) { return (.20f * (1 - t) * (1 - t * .3f) + .015f) * k; };
-    V prev_a{}, prev_b{}, prev_t{};
+    const float flip = f.side ? 1.f : -1.f;
+    constexpr int kSeg = 16;
+    // the sickle's two edges as curves from the wrist to the tip (hand units, y along the fingers, z toward the palm): the outer back
+    // edge arcs high over the fingers, the inner cutting edge less, and they meet at the point, which hooks down past the fingertips
+    auto curve = [&](V b, V m, V e, float t) { return (b * ((1 - t) * (1 - t)) + m * (2 * t * (1 - t)) + e * (t * t)) * k; };
+    const V tip{flip * .05f, .62f, .62f};
+    auto outer = [&](float t) { return curve({0, 0, -.14f}, {flip * .03f, 1.55f, -.02f}, tip, t); };
+    auto inner = [&](float t) { return curve({0, .22f, -.02f}, {flip * .04f, 1.0f, .16f}, tip, t); };
+    V po{}, pi{}, pr{};
     for (int seg = 0; seg <= kSeg; ++seg) {
         const float t = static_cast<float>(seg) / kSeg;
-        const V c = spine(t), w = width(t) > 0 ? V{0, 0, width(t)} : V{};
-        const V a = hand_point(f, c - w * .35f), b = hand_point(f, c + w), mid = hand_point(f, c + V{flip * .03f, 0, w.z * .3f});
+        const V o = outer(t), in = inner(t);
+        const V d = o - in;   // the green ridge just outside the outer edge, narrowing to nothing at the point
+        const float dl = std::sqrt(dot(d, d));
+        const V rim = dl > 1e-4f ? o + d * (.045f * k * std::min(1.f, dl / (.12f * k)) / dl) : o;
+        const V a = hand_point(f, o), b = hand_point(f, in), r = hand_point(f, rim);
         if (seg) {
-            triangle(prev_a, a, prev_t, face), triangle(prev_t, a, mid, face);       // one face, curving through the ridge
-            triangle(prev_t, mid, prev_b, edge), triangle(prev_b, mid, b, edge);      // the cutting side
+            const Color col = seg % 2 ? face : mix(face, shade, .35f);   // faint bands, like the blade's sheen
+            triangle(po, a, b, col), triangle(po, b, pi, col);
+            triangle(pr, r, a, ridge), triangle(pr, a, po, ridge);
         }
-        prev_a = a, prev_b = b, prev_t = mid;
+        po = a, pi = b, pr = r;
     }
-    tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
+    tube(hand_point(f, {0, -.04f, -.10f}), hand_point(f, V{0, .12f, -.14f} * std::max(k, .3f)), .07f * f.size, .06f * f.size, cuff, true);
 }
 // The game's 2D layer (conversations, menus, prompts, talk bubbles) floats in the world on a large sheet in front of the player instead
 // of being painted on the eyes: only the pixels the 2D layer drew are shown (picture 2), the sheet stays where it is while the head looks
@@ -316,7 +324,7 @@ void hud_sheet(const xr::EyeView &head, uint64_t now, const float *hud, const fl
     fwd = norm(fwd);
     const float yaw = std::atan2(fwd.x, -fwd.z);
     const V eye = vec(head.center);
-    const V want = eye + fwd * dist + V{0, -.12f, 0};
+    const V want = eye + fwd * dist + V{0, vr_value("ui_height", 0.05, -1.0, 1.0), 0};   // a touch above the eyes: the conversation box sits low on it
     float turn = yaw - g.ui_yaw;
     while (turn > kPi) turn -= 2 * kPi;
     while (turn < -kPi) turn += 2 * kPi;
