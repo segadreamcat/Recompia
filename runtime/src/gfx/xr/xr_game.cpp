@@ -70,6 +70,12 @@ HandView hand_view(int hand) {
     std::lock_guard<std::mutex> lk(st.gm);
     return {st.hands[hand], st.grips[hand], st.triggers[hand].load(), st.squeezes[hand].load()};
 }
+void hold_panel(int hand, float width_m) {
+    State& st = s();
+    st.panel_hand_width.store(std::clamp(width_m, .08f, 1.5f));
+    st.panel_hand_ns.store(qpc::now_ns());
+    st.panel_hand.store(hand < 0 || hand > 1 ? -1 : hand);
+}
 void haptic(int hand, float amplitude, float seconds) {
     if(hand < 0 || hand > 1 || !running()) return;
     s().haptic_seconds[hand].store(std::clamp(seconds, .005f, .25f));

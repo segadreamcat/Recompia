@@ -63,6 +63,7 @@ struct State {
     float morph[2] = {};        // per hand: 0 the glove, 1 the Cut blade; animated between, Ditto style
     uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
     uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
+    bool shoulder_was[2] = {};       // that grip was already squeezed (no new over-the-shoulder pull until it opens)
     bool left_grip_was = false;
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
@@ -453,6 +454,35 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
+    // Over the shoulder: a hand reached up behind the head and squeezed pulls something out into that hand. Behind the left
+    // shoulder the camera (Photo Mode, Minus), behind the right shoulder the backpack (the bag, X); the game's screen for it is
+    // held in the hand until it closes. The grip's own button is held back while the hand is back there.
+    {
+        V fwd = rotate(head.quat, {0, 0, -1}), side = rotate(head.quat, {1, 0, 0});
+        fwd.y = side.y = 0;
+        fwd = norm(fwd), side = norm(side);
+        for (int h = 0; h < 2; ++h) {
+            const xr::HandView &hv = h ? right : left;
+            const bool held = hv.squeeze > .6f;
+            if (!hv.grip.valid) {
+                g.shoulder_was[h] = held;
+                continue;
+            }
+            const V rel = vec(hv.grip.pos) - vec(head.center);
+            const float behind = -(rel.x * fwd.x + rel.z * fwd.z), across = rel.x * side.x + rel.z * side.z;
+            const bool there = behind > vr_value("shoulder_behind", 0.06, -0.3, 0.3) && rel.y > -0.35f && rel.y < 0.35f;
+            if (there) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+            if (there && held && !g.shoulder_was[h]) {
+                const bool camera = across < 0;
+                pulse(hid::btn(camera ? hid::kBtnMinus : hid::kBtnX), now);
+                xr::hold_panel(h, static_cast<float>(camera ? vr_value("camera_width", 0.22, 0.08, 0.8) : vr_value("backpack_width", 0.42, 0.1, 1.2)));
+                xr::haptic(h, .5f, .07f);
+                if (h) g.grip_cast = true;   // not a jump on release
+                NXLOG_I("vr", "over the shoulder: %s from behind the %s shoulder", camera ? "camera" : "backpack", camera ? "left" : "right");
+            }
+            g.shoulder_was[h] = held;
+        }
+    }
     if (cutting && left.grip.valid) {   // left grip: the claw while held; a quick tap is still L
         capture |= hid::btn(hid::kBtnL);
         const bool held = left.squeeze > .5f;
