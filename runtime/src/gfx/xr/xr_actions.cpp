@@ -177,7 +177,12 @@ void read_actions() {
     if (lc && (rc || std::fabs(l.x) > .75f || std::fabs(l.y) > .75f)) st.left_click_used = true;
     if (lc && rc) st.right_click_used = true;
     if (st.shortcuts_enabled.load(std::memory_order_relaxed)) {
-        if (!lc && st.left_click_was && !st.left_click_used && now-st.left_click_ns < 800000000ull)
+        // Screenshot: the left stick pressed in, tapped or held (a hold takes it after a third of a second; once per press).
+        if (lc && !st.left_click_used && now-st.left_click_ns >= 330000000ull) {
+            st.commands.fetch_or(kScreenshot, std::memory_order_relaxed);
+            st.left_click_used = true;
+        }
+        if (!lc && st.left_click_was && !st.left_click_used)
             st.commands.fetch_or(kScreenshot, std::memory_order_relaxed);
         // First / third person: hold the right stick in for most of a second (a quick press, easy to make by accident while turning,
         // does nothing).
