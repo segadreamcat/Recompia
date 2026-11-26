@@ -64,6 +64,8 @@ struct State {
     uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
     uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
     bool shoulder_was[2] = {};       // that grip was already squeezed (no new over-the-shoulder pull until it opens)
+    int shoulder_prop[2] = {};       // what that hand reaches for or just pulled out: 0 nothing, 1 the camera, 2 the backpack
+    uint64_t pulled_ns[2] = {};
     bool left_grip_was = false;
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
@@ -330,6 +332,42 @@ void blade(const HandFrame &f, float grow = 1) {
     }
     tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
 }
+// A box in a pose's space (centre, half sizes), lit a little per face.
+void box(const xr::EyeView &pose, V center, V half, Color color) {
+    auto at = [&](float x, float y, float z) { return vec(pose.pos) + rotate(pose.quat, center + V{half.x * x, half.y * y, half.z * z}); };
+    auto face = [&](V a, V b, V cc, V d, float light) {
+        const Color col{color.r * light, color.g * light, color.b * light};
+        triangle(a, b, cc, col), triangle(a, cc, d, col);
+    };
+    face(at(-1, 1, -1), at(1, 1, -1), at(1, 1, 1), at(-1, 1, 1), 1.f);         // top
+    face(at(-1, -1, -1), at(-1, -1, 1), at(1, -1, 1), at(1, -1, -1), .55f);   // bottom
+    face(at(-1, -1, 1), at(-1, 1, 1), at(1, 1, 1), at(1, -1, 1), .85f);       // back (+z)
+    face(at(-1, -1, -1), at(1, -1, -1), at(1, 1, -1), at(-1, 1, -1), .80f);   // front (-z)
+    face(at(-1, -1, -1), at(-1, 1, -1), at(-1, 1, 1), at(-1, -1, 1), .70f);   // left
+    face(at(1, -1, -1), at(1, -1, 1), at(1, 1, 1), at(1, 1, -1), .75f);       // right
+}
+V at_pose(const xr::EyeView &pose, V local) { return vec(pose.pos) + rotate(pose.quat, local); }
+// The backpack, hanging from the hand by its top: mint body and rounded top, darker straps, a black band and a gold clasp.
+void backpack(const xr::EyeView &grip, float k) {
+    const Color mint{.24f, .82f, .62f}, strap{.15f, .58f, .44f}, band{.05f, .05f, .06f}, gold{.92f, .74f, .12f};
+    box(grip, V{0, -.13f, .0f} * k, V{.10f, .11f, .06f} * k, mint);
+    ball(grip, V{0, -.03f, 0} * k, V{.10f, .05f, .06f} * k, mint);                       // the rounded top
+    box(grip, V{0, -.115f, -.058f} * k, V{.095f, .012f, .006f} * k, band);                 // the band across the front
+    box(grip, V{0, -.12f, -.066f} * k, V{.03f, .035f, .008f} * k, gold);                   // the clasp
+    box(grip, V{0, -.12f, -.072f} * k, V{.03f, .006f, .004f} * k, {.6f, .45f, .05f});     // its seam
+    for (const float x : {-.075f, .075f})                                                   // straps down the back
+        tube(at_pose(grip, V{x, -.01f, .06f} * k), at_pose(grip, V{x * 1.2f, -.22f, .07f} * k), .014f * k, .014f * k, strap);
+}
+// The camera, held with its lens pointing away: red lower body, white top, black lens with a dark blue glass, a red button.
+void camera_prop(const xr::EyeView &grip, float k) {
+    const Color red{.80f, .06f, .14f}, white{.93f, .93f, .93f}, black{.07f, .07f, .09f}, glass{.12f, .16f, .45f};
+    box(grip, V{0, -.01f, -.06f} * k, V{.065f, .028f, .026f} * k, red);
+    box(grip, V{0, .028f, -.06f} * k, V{.065f, .012f, .026f} * k, white);
+    box(grip, V{-.035f, .046f, -.06f} * k, V{.014f, .007f, .012f} * k, {.55f, .56f, .6f});   // the dial
+    box(grip, V{.04f, .044f, -.06f} * k, V{.008f, .005f, .008f} * k, red);                    // the shutter button
+    tube(at_pose(grip, V{0, .0f, -.086f} * k), at_pose(grip, V{0, .0f, -.13f} * k), .030f * k, .026f * k, black);
+    ball(grip, V{0, 0, -.131f} * k, V{.021f, .021f, .004f} * k, glass);
+}
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
     g.pulse_until = now + 120000000ull;
@@ -472,15 +510,24 @@ void game_frame(::Ctx *c) {
             const float behind = -(rel.x * fwd.x + rel.z * fwd.z), across = rel.x * side.x + rel.z * side.z;
             const bool there = behind > vr_value("shoulder_behind", 0.06, -0.3, 0.3) && rel.y > -0.35f && rel.y < 0.35f;
             if (there) capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+            const bool recent = now - g.pulled_ns[h] < 900000000ull;
+            if (!recent) g.shoulder_prop[h] = there ? (across < 0 ? 1 : 2) : 0;
             if (there && held && !g.shoulder_was[h]) {
                 const bool camera = across < 0;
                 pulse(hid::btn(camera ? hid::kBtnMinus : hid::kBtnX), now);
                 xr::hold_panel(h, static_cast<float>(camera ? vr_value("camera_width", 0.22, 0.08, 0.8) : vr_value("backpack_width", 0.42, 0.1, 1.2)));
                 xr::haptic(h, .5f, .07f);
+                g.pulled_ns[h] = now;
+                g.shoulder_prop[h] = camera ? 1 : 2;
                 if (h) g.grip_cast = true;   // not a jump on release
                 NXLOG_I("vr", "over the shoulder: %s from behind the %s shoulder", camera ? "camera" : "backpack", camera ? "left" : "right");
             }
             g.shoulder_was[h] = held;
+            // the thing itself: a small one appears as the hand reaches back, full size once pulled out
+            if (g.shoulder_prop[h]) {
+                const float k = now - g.pulled_ns[h] < 900000000ull ? 1.f : .6f;
+                g.shoulder_prop[h] == 1 ? camera_prop(hv.grip, k) : backpack(hv.grip, k);
+            }
         }
     }
     if (cutting && left.grip.valid) {   // left grip: the claw while held; a quick tap is still L
