@@ -41,6 +41,7 @@ enum class Key : uint8_t {
     VrPetting,
     VrHands,
     VrWrist,
+    VrFloatingHud,
     VrWhipCast,
     VrHudScale,
     // the menu pointer (pkp_menu.cpp) and the prompt icons (pkp_kbm.cpp)

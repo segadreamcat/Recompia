@@ -148,11 +148,6 @@ struct State {
     uint64_t next_id = 0;
     Tag camera;
     std::atomic<bool> world_mode{false};
-    // hold_panel: the hand holding the next panel (-1 none), its width, when it was asked for and whether the panel has shown since
-    std::atomic<int> panel_hand{-1};
-    std::atomic<float> panel_hand_width{.3f};
-    std::atomic<uint64_t> panel_hand_ns{0};
-    bool panel_hand_shown = false;
 
     // fm protects only the three-slot CPU handoff. It is never held during an OpenXR call or a GPU wait.
     std::mutex fm;

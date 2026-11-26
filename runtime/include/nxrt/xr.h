@@ -72,9 +72,6 @@ struct Tag {
 Tag game_present();
 // The game camera module identifies whether its world camera is active, independently of how often that camera updates.
 void set_world_active(bool active);
-// The next flat panel (a menu or Photo Mode) is held in that hand (0 left, 1 right) at width_m across, facing the eyes, instead of standing
-// in front of the player; it lets go when that panel closes, or when no panel opens within a few seconds.
-void hold_panel(int hand, float width_m);
 // The camera module placed this exact eye; metadata stays valid until the next camera update or mode change.
 void note_world_view(const EyeView& view);
 // The game thread: the field of view this frame's picture was rendered with, read back from the projection (tangents, left and down

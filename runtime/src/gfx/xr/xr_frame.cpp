@@ -127,69 +127,16 @@ void submit_layers(const XrFrameState& fs, bool& panel_mode, XrPosef& panel_pose
             panel_pose.position = {head.center[0] - std::sin(angle) * panel_distance(), head.center[1] + 0.30f, head.center[2] - std::cos(angle) * panel_distance()};
         }
         panel_mode = true;
-        const int held = st.panel_hand.load();
-        if (held >= 0) {   // a panel held in the hand: just past the fingers, turned to face the eyes
-            st.panel_hand_shown = true;
-            EyeView grip;
-            { std::lock_guard<std::mutex> lk(st.gm); grip = st.grips[held]; }
-            if (grip.valid && head.valid) {
-                auto rot = [](const float* q, const float v[3], float out[3]) {
-                    const float x = q[0], y = q[1], z = q[2], w = q[3];
-                    const float tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
-                    out[0] = v[0] + w * tx + (y * tz - z * ty), out[1] = v[1] + w * ty + (z * tx - x * tz), out[2] = v[2] + w * tz + (x * ty - y * tx);
-                };
-                const float ahead[3] = {0, .03f, -.10f};
-                float off[3];
-                rot(grip.quat, ahead, off);
-                const float p[3] = {grip.pos[0] + off[0], grip.pos[1] + off[1], grip.pos[2] + off[2]};
-                float d[3] = {head.center[0] - p[0], head.center[1] - p[1], head.center[2] - p[2]};
-                const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                if (dl > 1e-3f) {
-                    for (float& v : d) v /= dl;
-                    // basis: z toward the eyes, x level, y up; then the quaternion of that rotation
-                    float xa[3] = {d[2], 0, -d[0]};
-                    const float xl = std::sqrt(xa[0] * xa[0] + xa[2] * xa[2]);
-                    if (xl > 1e-3f) {
-                        xa[0] /= xl, xa[2] /= xl;
-                        const float ya[3] = {d[1] * xa[2] - d[2] * xa[1], d[2] * xa[0] - d[0] * xa[2], d[0] * xa[1] - d[1] * xa[0]};
-                        const float m00 = xa[0], m01 = ya[0], m02 = d[0], m10 = xa[1], m11 = ya[1], m12 = d[1], m20 = xa[2], m21 = ya[2], m22 = d[2];
-                        XrQuaternionf q{};
-                        const float tr = m00 + m11 + m22;
-                        if (tr > 0) {
-                            const float sq = std::sqrt(tr + 1) * 2;
-                            q = {(m21 - m12) / sq, (m02 - m20) / sq, (m10 - m01) / sq, .25f * sq};
-                        } else if (m00 > m11 && m00 > m22) {
-                            const float sq = std::sqrt(1 + m00 - m11 - m22) * 2;
-                            q = {.25f * sq, (m01 + m10) / sq, (m02 + m20) / sq, (m21 - m12) / sq};
-                        } else if (m11 > m22) {
-                            const float sq = std::sqrt(1 + m11 - m00 - m22) * 2;
-                            q = {(m01 + m10) / sq, .25f * sq, (m12 + m21) / sq, (m02 - m20) / sq};
-                        } else {
-                            const float sq = std::sqrt(1 + m22 - m00 - m11) * 2;
-                            q = {(m02 + m20) / sq, (m12 + m21) / sq, .25f * sq, (m10 - m01) / sq};
-                        }
-                        panel_pose.orientation = q;
-                        panel_pose.position = {p[0], p[1], p[2]};
-                    }
-                }
-            }
-        }
         quad.space = st.local;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         quad.pose = panel_pose;
-        const float qw = st.panel_hand.load() >= 0 ? st.panel_hand_width.load() : panel_width();
-        quad.size = {qw, qw * static_cast<float>(st.panel.h) / static_cast<float>(st.panel.w)};
+        quad.size = {panel_width(), panel_width() * static_cast<float>(st.panel.h) / static_cast<float>(st.panel.w)};
         quad.subImage.swapchain = st.panel.sc;
         quad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(st.panel.w), static_cast<int32_t>(st.panel.h)}};
         layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
         ei.layerCount = 1;
     } else if (fs.shouldRender && st.published_pair >= 0) {
         panel_mode = false;
-        if (st.panel_hand.load() >= 0 && (st.panel_hand_shown || qpc::now_ns() - st.panel_hand_ns.load() > 4000000000ull)) {
-            st.panel_hand.store(-1);
-            st.panel_hand_shown = false;
-            st.panel_epoch = 0;   // the next ordinary panel is placed in front again
-        }
         for (int e = 0; e < 2; ++e) {
             const Tag& t = st.published_tags[e];
             const Swap& sw = st.swap[e];

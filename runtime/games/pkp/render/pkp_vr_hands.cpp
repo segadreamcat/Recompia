@@ -3,7 +3,6 @@
 // and gameplay remain authoritative.
 #include "render/pkp_vr_hands.h"
 #include "render/pkp_vr_glove_mesh.inc"
-#include "render/pkp_vr_camera.h"
 #include "core/pkp_guest.h"
 #include "core/pkp_layout.h"
 #include "core/pkp_settings.h"
@@ -61,14 +60,13 @@ struct State {
     V previous, vine_origin, vine_direction;
     uint16_t action = 0;
     uint8_t skill = 0;
+    // The floating HUD: where it stands (local space) and which way it faces; it follows the head lazily
+    bool ui_placed = false;
+    V ui_center, ui_target;
+    float ui_yaw = 0, ui_target_yaw = 0;
     float morph[2] = {};        // per hand: 0 the glove, 1 the Cut blade; animated between, Ditto style
     uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
     uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
-    bool shoulder_was[2] = {};       // that grip was already squeezed (no new over-the-shoulder pull until it opens)
-    int shoulder_prop[2] = {};       // what that hand reaches for: 0 nothing, 1 the camera, 2 the backpack
-    int held = 0, held_hand = 0;     // the camera (1) or backpack (2) in hand, held while its grip stays squeezed
-    uint64_t held_ns = 0;
-    bool menu_seen = false, trigger_was = false;
     bool left_grip_was = false;
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
@@ -217,7 +215,7 @@ float watch_size() { static const float v = vr_value("watch_size", 0.056, 0.020,
 constexpr float kWristY = .05f, kWristRx = .25f, kWristRz = .20f;
 constexpr float kWristCx[2] = {-.044f, .046f}, kWristCz[2] = {-.004f, -.0065f};
 // Native HUD rects (x, y, w, h of the 16:9 HUD in the square picture, before the VR HUD inset): the move wheel and the Nearby Habitats box.
-constexpr float kWheelRect[] = {.80f, .65f, .19f, .16f}, kHabitatRect[] = {.0f, .27f, .28f, .15f};
+constexpr float kWheelRect[] = {.80f, .65f, .19f, .16f};
 Watch watch_pose(const HandFrame &f, int side) {
     Watch w;
     w.radius = watch_size() * .5f / kBezel;
@@ -269,45 +267,6 @@ void watch(const HandFrame &f, const Watch &w, bool touched) {
     if (touched)   // a small light at the edge while a finger is on the face
         ball(xr::EyeView{}, w.center + w.up * (w.radius * .8f) + w.normal * .002f, {.003f, .003f, .003f}, green);
 }
-// The right wrist band with the Nearby Habitats box wrapped along it, reading left to right across the back of the wrist (thumb side to
-// little finger, top toward the fingers); only the box's own pixels are drawn (picture 2).
-void habitat_band(const HandFrame &f) {
-    const float card_w = vr_value("habitat_card_width", 0.060, 0.03, 0.20);   // along the band, metres
-    const float card_h = card_w * (kHabitatRect[3] / kHabitatRect[2]);
-    band(f, 1, .016f, 1.01f);   // a slim, snug band; the box sits on it like a screen
-    // the band's outer surface at angle t (t = -pi/2 is the back of the wrist; t falls toward -X, the little finger)
-    const float grow = 1.05f, rx = kWristRx * grow, rz = kWristRz * grow;
-    auto at = [&](float t, float y) { return hand_point(f, {kWristCx[1] + rx * std::cos(t), kWristY + y, kWristCz[1] + rz * std::sin(t)}); };
-    // angle for an arc length s (hand units) from the back of the wrist, stepping along the ellipse
-    constexpr int kSteps = 16;
-    float ts[kSteps + 1];
-    {
-        const float half = card_w * .5f / f.size;
-        float t = -kPi * .5f;
-        // walk back to the thumb-side end first
-        for (float acc = 0; acc < half;) {
-            const float dt = .002f, speed = std::sqrt(rx * rx * std::sin(t) * std::sin(t) + rz * rz * std::cos(t) * std::cos(t));
-            acc += speed * dt, t += dt;
-        }
-        ts[0] = t;
-        const float step = card_w / f.size / kSteps;
-        for (int k = 1; k <= kSteps; ++k) {
-            for (float acc = 0; acc < step;) {
-                const float dt = .002f, speed = std::sqrt(rx * rx * std::sin(t) * std::sin(t) + rz * rz * std::cos(t) * std::cos(t));
-                acc += speed * dt, t -= dt;
-            }
-            ts[k] = t;
-        }
-    }
-    const float hy = card_h * .5f / f.size;
-    const Color white{1, 1, 1};
-    for (int k = 0; k < kSteps; ++k) {
-        const float u0 = static_cast<float>(k) / kSteps, u1 = static_cast<float>(k + 1) / kSteps;
-        const V tl = at(ts[k], hy), tr = at(ts[k + 1], hy), bl = at(ts[k], -hy), br = at(ts[k + 1], -hy);
-        triangle(tl, bl, br, white, 2, {u0, 0, 0}, {u0, 1, 0}, {u1, 1, 0});
-        triangle(tl, br, tr, white, 2, {u0, 0, 0}, {u1, 1, 0}, {u1, 0, 0});
-    }
-}
 // Cut: each glove becomes a pale, curved scythe blade (the move borrows Scyther's), from the back of the wrist past the fingertips.
 // grow 0..1 draws it part way out of the hand, still Ditto purple at the start (the end of a Ditto morph).
 Color mix(Color a, Color b, float t) { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; }
@@ -335,41 +294,65 @@ void blade(const HandFrame &f, float grow = 1) {
     }
     tube(hand_point(f, {0, -.02f, -.02f}), hand_point(f, {0, .16f, -.08f}), .055f * f.size, .045f * f.size, base, true);
 }
-// A box in a pose's space (centre, half sizes), lit a little per face.
-void box(const xr::EyeView &pose, V center, V half, Color color) {
-    auto at = [&](float x, float y, float z) { return vec(pose.pos) + rotate(pose.quat, center + V{half.x * x, half.y * y, half.z * z}); };
-    auto face = [&](V a, V b, V cc, V d, float light) {
-        const Color col{color.r * light, color.g * light, color.b * light};
-        triangle(a, b, cc, col), triangle(a, cc, d, col);
+// The game's 2D layer (conversations, menus, prompts, talk bubbles) floats in the world on a large sheet in front of the player instead
+// of being painted on the eyes: only the pixels the 2D layer drew are shown (picture 2), the sheet stays where it is while the head looks
+// around and glides back in front once the head has turned well away. The move wheel, already on the watch, is left out of it.
+// [vr] ui_distance and ui_width in metres, ui_follow the head turn (degrees) that brings it back in front.
+void hud_sheet(const xr::EyeView &head, uint64_t now, const float *hud, const float *hole) {
+    static uint64_t last = now;
+    const float dt = std::min(static_cast<float>(now - last) * 1e-9f, .1f);
+    last = now;
+    const float dist = vr_value("ui_distance", 1.5, 0.6, 4.0), width = vr_value("ui_width", 1.7, 0.5, 5.0);
+    const float follow = vr_value("ui_follow", 40, 10, 120) * kPi / 180;
+    V fwd = rotate(head.quat, {0, 0, -1});
+    fwd.y = 0;
+    if (fwd.x * fwd.x + fwd.z * fwd.z < 1e-4f) fwd = {0, 0, -1};
+    fwd = norm(fwd);
+    const float yaw = std::atan2(fwd.x, -fwd.z);
+    const V eye = vec(head.center);
+    const V want = eye + fwd * dist + V{0, -.12f, 0};
+    float turn = yaw - g.ui_yaw;
+    while (turn > kPi) turn -= 2 * kPi;
+    while (turn < -kPi) turn += 2 * kPi;
+    const V off = g.ui_center - eye;
+    const float away = std::sqrt(off.x * off.x + off.z * off.z);
+    if (!g.ui_placed) {
+        g.ui_placed = true;
+        g.ui_center = g.ui_target = want;
+        g.ui_yaw = g.ui_target_yaw = yaw;
+    } else if (std::fabs(turn) > follow || std::fabs(away - dist) > .6f) {
+        g.ui_target = want;
+        g.ui_target_yaw = yaw;
+    }
+    // glide toward the target (about a third of a second)
+    const float a = std::min(1.f, dt * 6);
+    g.ui_center = g.ui_center + (g.ui_target - g.ui_center) * a;
+    float dy = g.ui_target_yaw - g.ui_yaw;
+    while (dy > kPi) dy -= 2 * kPi;
+    while (dy < -kPi) dy += 2 * kPi;
+    g.ui_yaw += dy * a;
+    const V right{std::cos(g.ui_yaw), 0, std::sin(g.ui_yaw)}, up{0, 1, 0};
+    const float hw = width * .5f, hh = hw * hud[3] / hud[2] * 1.f;   // the band's own shape (16:9 at full HUD)
+    // the sheet in band coordinates (u right, v down), cut around the hole the watch's wheel leaves
+    auto rect = [&](float u0, float v0, float u1, float v1) {
+        if (u1 <= u0 || v1 <= v0) return;
+        auto at = [&](float u, float v) { return g.ui_center + right * ((u - .5f) * 2 * hw) + up * ((.5f - v) * 2 * hh); };
+        const Color white{1, 1, 1};
+        triangle(at(u0, v0), at(u0, v1), at(u1, v1), white, 2, {u0, v0, 0}, {u0, v1, 0}, {u1, v1, 0});
+        triangle(at(u0, v0), at(u1, v1), at(u1, v0), white, 2, {u0, v0, 0}, {u1, v1, 0}, {u1, v0, 0});
     };
-    face(at(-1, 1, -1), at(1, 1, -1), at(1, 1, 1), at(-1, 1, 1), 1.f);         // top
-    face(at(-1, -1, -1), at(-1, -1, 1), at(1, -1, 1), at(1, -1, -1), .55f);   // bottom
-    face(at(-1, -1, 1), at(-1, 1, 1), at(1, 1, 1), at(1, -1, 1), .85f);       // back (+z)
-    face(at(-1, -1, -1), at(1, -1, -1), at(1, 1, -1), at(-1, 1, -1), .80f);   // front (-z)
-    face(at(-1, -1, -1), at(-1, 1, -1), at(-1, 1, 1), at(-1, -1, 1), .70f);   // left
-    face(at(1, -1, -1), at(1, -1, 1), at(1, 1, 1), at(1, 1, -1), .75f);       // right
+    if (hole && hole[2] > 0) {
+        const float u0 = std::clamp((hole[0] - hud[0]) / hud[2], 0.f, 1.f), u1 = std::clamp((hole[0] + hole[2] - hud[0]) / hud[2], 0.f, 1.f);
+        const float v0 = std::clamp((hole[1] - hud[1]) / hud[3], 0.f, 1.f), v1 = std::clamp((hole[1] + hole[3] - hud[1]) / hud[3], 0.f, 1.f);
+        rect(0, 0, 1, v0), rect(0, v1, 1, 1), rect(0, v0, u0, v1), rect(u1, v0, 1, v1);
+    } else {
+        rect(0, 0, 1, 1);
+    }
 }
-V at_pose(const xr::EyeView &pose, V local) { return vec(pose.pos) + rotate(pose.quat, local); }
-// The backpack, hanging from the hand by its top: mint body and rounded top, darker straps, a black band and a gold clasp.
-void backpack(const xr::EyeView &grip, float k) {
-    const Color mint{.24f, .82f, .62f}, strap{.15f, .58f, .44f}, band{.05f, .05f, .06f}, gold{.92f, .74f, .12f};
-    box(grip, V{0, -.13f, .0f} * k, V{.10f, .11f, .06f} * k, mint);
-    ball(grip, V{0, -.03f, 0} * k, V{.10f, .05f, .06f} * k, mint);                       // the rounded top
-    box(grip, V{0, -.115f, -.058f} * k, V{.095f, .012f, .006f} * k, band);                 // the band across the front
-    box(grip, V{0, -.12f, -.066f} * k, V{.03f, .035f, .008f} * k, gold);                   // the clasp
-    box(grip, V{0, -.12f, -.072f} * k, V{.03f, .006f, .004f} * k, {.6f, .45f, .05f});     // its seam
-    for (const float x : {-.075f, .075f})                                                   // straps down the back
-        tube(at_pose(grip, V{x, -.01f, .06f} * k), at_pose(grip, V{x * 1.2f, -.22f, .07f} * k), .014f * k, .014f * k, strap);
-}
-// The camera, held with its lens pointing away: red lower body, white top, black lens with a dark blue glass, a red button.
-void camera_prop(const xr::EyeView &grip, float k) {
-    const Color red{.80f, .06f, .14f}, white{.93f, .93f, .93f}, black{.07f, .07f, .09f}, glass{.12f, .16f, .45f};
-    box(grip, V{0, -.01f, -.06f} * k, V{.065f, .028f, .026f} * k, red);
-    box(grip, V{0, .028f, -.06f} * k, V{.065f, .012f, .026f} * k, white);
-    box(grip, V{-.035f, .046f, -.06f} * k, V{.014f, .007f, .012f} * k, {.55f, .56f, .6f});   // the dial
-    box(grip, V{.04f, .044f, -.06f} * k, V{.008f, .005f, .008f} * k, red);                    // the shutter button
-    tube(at_pose(grip, V{0, .0f, -.086f} * k), at_pose(grip, V{0, .0f, -.13f} * k), .030f * k, .026f * k, black);
-    ball(grip, V{0, 0, -.131f} * k, V{.021f, .021f, .004f} * k, glass);
+// The whole HUD band of the square picture (16:9, centred), moved by the user's HUD inset.
+void hud_band(float out[4]) {
+    const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
+    out[0] = .5f - .5f * scale, out[1] = .5f - .28125f * scale, out[2] = scale, out[3] = .5625f * scale;
 }
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
@@ -379,8 +362,6 @@ void reset_interaction() {
     g.touching = g.swiped = g.whip_armed = false;
     g.time = g.pulse_until = g.grip_start = 0;
     g.grip_was = g.grip_cast = false;
-    if (g.held) vr_camera::hold_world(false);
-    g.held = 0;
     xr::spatial_input(0, 0, 0);
 }
 void frame(bool playing, double, play::GameFrame *) { g.playing = playing; }
@@ -393,11 +374,26 @@ void game_frame(::Ctx *c) {
     const auto head = xr::head_view();
     const auto left = xr::hand_view(0), right = xr::hand_view(1);
     const bool active =
-        xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) && (g.held || !menu_has_selection());
+        xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) && !menu_has_selection();
     if (!active) {
         reset_interaction();
+        // menus and conversations: no hands, but the 2D layer still floats in the world
+        const bool sheet = xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) &&
+                           settings::get_bool(settings::Key::VrFloatingHud);
+        g.scene.count = 0;
+        std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
+        if (sheet) {
+            float hud[4];
+            hud_band(hud);
+            std::copy(hud, hud + 4, g.scene.picture_rect + 4);
+            hud_sheet(head, now, hud, nullptr);
+        } else {
+            g.ui_placed = false;
+        }
         xr::set_spatial_scene(g.scene);
-        ui_layer::set_background_region(0, {}), ui_layer::set_background_region(1, {});
+        ui_layer::set_background_region(0, {});
+        const float *r = g.scene.picture_rect + 4;
+        ui_layer::set_background_region(1, r[2] > 0 ? ui_layer::Region{r[0], r[1], r[2], r[3]} : ui_layer::Region{});
         return;
     }
     if (head.reference_epoch != g.epoch) {
@@ -443,17 +439,7 @@ void game_frame(::Ctx *c) {
             }
         }
     }
-    // what the hands hold or reach for
-    for (int h = 0; h < 2; ++h) {
-        const xr::HandView &hv = h ? right : left;
-        if (!hv.grip.valid) continue;
-        const int prop = g.held && g.held_hand == h ? g.held : g.shoulder_prop[h];
-        if (!prop) continue;
-        const float k = g.held && g.held_hand == h ? 1.f : .6f;
-        prop == 1 ? camera_prop(hv.grip, k) : backpack(hv.grip, k);
-    }
     const bool wrist = settings::get_bool(settings::Key::VrWrist) && left_frame.valid;
-    const bool habitats = settings::get_bool(settings::Key::VrWrist) && right_frame.valid;
     std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
     // the HUD rects in the square render, moved by the user's whole-HUD inset; a rect is lifted only while its wrist is drawn
     const auto lift = [&](int k, const float *native) {
@@ -464,10 +450,7 @@ void game_frame(::Ctx *c) {
         r[2] = native[2] * scale;
         r[3] = native[3] * scale;
     };
-    if (habitats) {
-        habitat_band(right_frame);
-        lift(1, kHabitatRect);
-    }
+    const bool sheet = settings::get_bool(settings::Key::VrFloatingHud);
     Watch w{};
     if (wrist) {
         // Smartwatch scrolling: rest the right index fingertip on the face and slide it toward the fingers (next move) or the elbow
@@ -506,68 +489,6 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
-    // Over the shoulder: a hand reached up behind the head and squeezed pulls something out and holds it while the grip stays shut.
-    // Behind the left shoulder the camera (Photo Mode, Minus), behind the right shoulder the backpack (the bag, X). The game stays in
-    // the 3D world while it is held, and its screen is drawn on the thing: the bag's items above the open backpack, the camera's
-    // view on the camera's back screen. That hand's trigger takes the photo (A). Letting go puts it away (B closes the screen).
-    {
-        V fwd = rotate(head.quat, {0, 0, -1}), side = rotate(head.quat, {1, 0, 0});
-        fwd.y = side.y = 0;
-        fwd = norm(fwd), side = norm(side);
-        for (int h = 0; h < 2; ++h) {
-            const xr::HandView &hv = h ? right : left;
-            const bool squeezed = hv.squeeze > .6f;
-            g.shoulder_prop[h] = 0;
-            if (!hv.grip.valid) {
-                g.shoulder_was[h] = squeezed;
-                continue;
-            }
-            const V rel = vec(hv.grip.pos) - vec(head.center);
-            const float behind = -(rel.x * fwd.x + rel.z * fwd.z), across = rel.x * side.x + rel.z * side.z;
-            const bool there = !g.held && behind > vr_value("shoulder_behind", 0.06, -0.3, 0.3) && rel.y > -0.35f && rel.y < 0.35f;
-            if (there) {
-                capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
-                g.shoulder_prop[h] = across < 0 ? 1 : 2;
-            }
-            if (there && squeezed && !g.shoulder_was[h]) {
-                g.held = across < 0 ? 1 : 2;
-                g.held_hand = h;
-                g.held_ns = now;
-                g.menu_seen = false;
-                g.trigger_was = hv.trigger > .5f;
-                pulse(hid::btn(g.held == 1 ? hid::kBtnMinus : hid::kBtnX), now);
-                vr_camera::hold_world(true);
-                xr::haptic(h, .5f, .07f);
-                if (h) g.grip_cast = true;   // not a jump on release
-                NXLOG_I("vr", "over the shoulder: %s out", g.held == 1 ? "camera" : "backpack");
-            }
-            g.shoulder_was[h] = squeezed;
-        }
-        if (g.held) {
-            const xr::HandView &hv = g.held_hand ? right : left;
-            capture |= hid::btn(g.held_hand ? hid::kBtnR : hid::kBtnL);
-            if (g.held == 1) {   // the shutter: that hand's trigger
-                capture |= hid::btn(g.held_hand ? hid::kBtnZR : hid::kBtnZL);
-                const bool pressed = hv.trigger > .5f;
-                if (pressed && !g.trigger_was && now - g.held_ns > 600000000ull) {
-                    pulse(hid::btn(hid::kBtnA), now);
-                    xr::haptic(g.held_hand, .6f, .05f);
-                    NXLOG_I("vr", "camera: photo");
-                }
-                g.trigger_was = pressed;
-            }
-            const bool menu = menu_has_selection();
-            if (menu) g.menu_seen = true;
-            const bool closed_by_game = g.held == 2 && g.menu_seen && !menu && now - g.held_ns > 1000000000ull;
-            if (!hv.grip.valid || hv.squeeze < .35f || closed_by_game) {
-                if (!closed_by_game) pulse(hid::btn(hid::kBtnB), now);
-                xr::haptic(g.held_hand, .3f, .04f);
-                NXLOG_I("vr", "over the shoulder: %s put away", g.held == 1 ? "camera" : "backpack");
-                g.held = 0;
-                vr_camera::hold_world(false);
-            }
-        }
-    }
     if (cutting && left.grip.valid) {   // left grip: the claw while held; a quick tap is still L
         capture |= hid::btn(hid::kBtnL);
         const bool held = left.squeeze > .5f;
@@ -667,37 +588,16 @@ void game_frame(::Ctx *c) {
         g.time = 0;
         g.whip_armed = false;
     }
+    if (sheet) {   // the rest of the 2D layer floats in the world, minus the wheel the watch already shows
+        float hud[4];
+        hud_band(hud);
+        std::copy(hud, hud + 4, g.scene.picture_rect + 4);
+        hud_sheet(head, now, hud, wrist ? g.scene.picture_rect : nullptr);
+    } else {
+        g.ui_placed = false;
+    }
     xr::spatial_input(now < g.pulse_until ? g.pulse : 0, capture, now + 150000000ull);
     xr::set_spatial_scene(g.scene);
-    if (g.held) {   // the held thing's screen: the whole HUD band of the picture
-        const xr::HandView &hv = g.held_hand ? right : left;
-        const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
-        const float hud[4] = {.5f - .5f * scale, .5f + (.21875f - .5f) * scale, scale, .5625f * scale};
-        std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
-        const Color white{1, 1, 1};
-        if (g.held == 1 && hv.grip.valid) {
-            // the camera's back screen: the whole view with Photo Mode's frame and buttons, just behind the body, facing back
-            std::copy(hud, hud + 4, g.scene.picture_rect);
-            const float w = vr_value("camera_screen", 0.16, 0.05, 0.6) * .5f, hh = w * 9 / 16;
-            const V c = at_pose(hv.grip, {0, .01f, -.030f});
-            const V r = rotate(hv.grip.quat, {1, 0, 0}), u = rotate(hv.grip.quat, {0, 1, 0});
-            const V tl = c - r * w + u * hh, tr = c + r * w + u * hh, bl = c - r * w - u * hh, br = c + r * w - u * hh;
-            triangle(tl, bl, br, white, 1, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
-            triangle(tl, br, tr, white, 1, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
-        } else if (g.held == 2 && hv.grip.valid) {
-            // the bag's screen: only what the menu draws, floating just above the backpack and turned to the eyes
-            std::copy(hud, hud + 4, g.scene.picture_rect + 4);
-            const float w = vr_value("backpack_screen", 0.50, 0.1, 1.5) * .5f, hh = w * 9 / 16;
-            const V c = vec(hv.grip.pos) + V{0, .06f + hh, 0};
-            V to = vec(head.center) - c;
-            to.y = 0;
-            to = norm(to);
-            const V r = norm(cross(V{0, 1, 0}, to)), u{0, 1, 0};
-            const V tl = c - r * w + u * hh, tr = c + r * w + u * hh, bl = c - r * w - u * hh, br = c + r * w - u * hh;
-            triangle(tl, bl, br, white, 2, {0, 0, 0}, {0, 1, 0}, {1, 1, 0});
-            triangle(tl, br, tr, white, 2, {0, 0, 0}, {1, 1, 0}, {1, 0, 0});
-        }
-    }
     for (int k = 0; k < 2; ++k) {   // the lifted HUD pieces are painted over with the world behind them in the eye images
         const float *r = g.scene.picture_rect + 4 * k;
         const float margin = r[2] > 0 ? .003f : 0;
