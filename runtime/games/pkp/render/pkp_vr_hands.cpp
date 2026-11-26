@@ -324,7 +324,7 @@ void hud_sheet(const xr::EyeView &head, uint64_t now, const float *hud, const fl
     fwd = norm(fwd);
     const float yaw = std::atan2(fwd.x, -fwd.z);
     const V eye = vec(head.center);
-    const V want = eye + fwd * dist + V{0, vr_value("ui_height", 0.05, -1.0, 1.0), 0};   // a touch above the eyes: the conversation box sits low on it
+    const V want = eye + fwd * dist + V{0, vr_value("ui_height", 0.0, -1.0, 1.0), 0};   // level with the eyes
     float turn = yaw - g.ui_yaw;
     while (turn > kPi) turn -= 2 * kPi;
     while (turn < -kPi) turn += 2 * kPi;
@@ -363,10 +363,11 @@ void hud_sheet(const xr::EyeView &head, uint64_t now, const float *hud, const fl
         rect(0, 0, 1, 1);
     }
 }
-// The whole HUD band of the square picture (16:9, centred), moved by the user's HUD inset.
+// The game's whole 2D layer: all of the square picture (its 2D reaches above and below the 16:9 middle, the conversation box among it),
+// moved by the user's HUD inset. Lifting all of it leaves no edge of the painted-back world inside the view.
 void hud_band(float out[4]) {
     const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
-    out[0] = .5f - .5f * scale, out[1] = .5f - .28125f * scale, out[2] = scale, out[3] = .5625f * scale;
+    out[0] = out[1] = .5f - .5f * scale, out[2] = out[3] = scale;
 }
 // Leafage: a long vine grows from the hand, Ditto purple where it leaves the hand and leaf green toward the tip. It is a loose chain:
 // the hand drags its root around, the rest follows with a little lag and a wiggle of its own, so a fast whip of the hand cracks it.

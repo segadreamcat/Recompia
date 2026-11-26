@@ -153,7 +153,7 @@ void set_spatial_scene(const SpatialScene &scene) {
     std::copy_n(scene.picture_rect, 8, g.pending.picture_rect);
 }
 namespace detail {
-constexpr int32_t kPicture = 1024;   // side of one band of the live picture image (the whole HUD stays readable)
+constexpr int32_t kPicture = 1536;   // side of one band of the live picture image (the whole 2D layer stays readable)
 void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, StageImage &target, const Tag &tag, const VkImage *background, const VkRect2D *excluded, bool flip_y) {
     if (!tag.world)
         return;
