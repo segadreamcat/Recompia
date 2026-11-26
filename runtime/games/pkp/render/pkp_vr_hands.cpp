@@ -377,9 +377,12 @@ void game_frame(::Ctx *c) {
         xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) && !menu_has_selection();
     if (!active) {
         reset_interaction();
-        // menus and conversations: no hands, but the 2D layer still floats in the world
-        const bool sheet = xr::running() && head.valid && g.playing && settings::get_bool(settings::Key::VrFirstPerson) &&
+        // menus and conversations (the game does not count those as play): no hands, but the 2D layer still floats in the world
+        const bool sheet = xr::running() && head.valid && settings::get_bool(settings::Key::VrFirstPerson) &&
                            settings::get_bool(settings::Key::VrFloatingHud);
+        static int was = -1;
+        if (was != (sheet ? 1 : 0)) NXLOG_I("vr", "floating HUD %s (menu or conversation)", sheet ? "on" : "off");
+        was = sheet ? 1 : 0;
         g.scene.count = 0;
         std::fill(std::begin(g.scene.picture_rect), std::end(g.scene.picture_rect), 0.f);
         if (sheet) {
@@ -587,6 +590,11 @@ void game_frame(::Ctx *c) {
     } else {
         g.time = 0;
         g.whip_armed = false;
+    }
+    {
+        static int was = -1;
+        if (was != (sheet ? 1 : 0)) NXLOG_I("vr", "floating HUD %s (play)", sheet ? "on" : "off");
+        was = sheet ? 1 : 0;
     }
     if (sheet) {   // the rest of the 2D layer floats in the world, minus the wheel the watch already shows
         float hud[4];

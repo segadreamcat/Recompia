@@ -2,6 +2,7 @@
 // Application-owned tracked geometry and live picture patches, independent of
 // the game's renderer and assets.
 #include "xr/xr_spatial.h"
+#include "nxrt/qpc.h"
 #include "nxrt/ui_layer.h"
 #include "extras/vk_make.h"
 #include "nxrt/gfx.h"
@@ -219,6 +220,16 @@ void spatial_render(gfx::Device &device, VkCommandBuffer cb, int slot, int eye, 
     if (from_target(scene.picture_rect, a, b)) band(0, target.image, a, b);
     // Picture 2 and its background: with no captured background both bands hold the same pixels, so nothing of it is drawn.
     if (from_target(scene.picture_rect + 4, a, b)) {
+        {   // how often the floating 2D layer had the world behind it to compare with (else it draws nothing), every 10 s
+            static uint64_t with = 0, without = 0, next = 0;
+            (background && background[1] && excluded[1].extent.width ? with : without)++;
+            const uint64_t now = qpc::now_ns();
+            if (now >= next) {
+                if (next) NXLOG_I("vr", "floating HUD pictures: %llu with the world behind, %llu without", static_cast<unsigned long long>(with),
+                                  static_cast<unsigned long long>(without));
+                next = now + 10000000000ull, with = without = 0;
+            }
+        }
         band(1, target.image, a, b);
         const VkRect2D &e = excluded[1];
         if (background && background[1] && e.extent.width && e.extent.height) {
