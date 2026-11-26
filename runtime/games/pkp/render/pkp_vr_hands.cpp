@@ -49,7 +49,8 @@ constexpr Color green{.14f, .65f, .19f}, black{.035f, .04f, .06f};
 // The character's selected move: a skill id (the move wheel's ids) at +0x1a of its move state at character + 0x3950 (0x2fa9a4 reads it,
 // the wheel's next / previous at 0x2f9030 change it). Cut is skill 5 (its action is 883).
 constexpr uint64_t kSelectedSkill = 0x3950 + 0x1a;
-constexpr uint8_t kCutSkill = 5;
+constexpr uint8_t kCutSkill = 5, kLeafageSkill = 1;   // Leafage is skill 1 (its action is 878)
+constexpr int kVineN = 16;   // points along a Leafage vine
 struct State {
     uint64_t base = 0, time = 0, epoch = 0, pulse_until = 0, pulse = 0, cooldown = 0, cast_start = 0, vine_start = 0;
     std::atomic<bool> playing{false};
@@ -66,8 +67,11 @@ struct State {
     float ui_yaw = 0, ui_target_yaw = 0;
     float morph[2] = {};        // per hand: 0 the glove, 1 the Cut blade; animated between, Ditto style
     uint64_t raised_until[2] = {};   // a blade stays a moment after its grip opens, so a swing keeps it
-    uint64_t left_grip_start = 0;    // with Cut selected the left grip is the claw; a quick tap still sends L
-    bool left_grip_was = false;
+    uint64_t grip_tap_start[2] = {};   // with Cut or Leafage selected a grip grows the claw or vine; a quick tap still sends L or R
+    bool grip_tap_was[2] = {};
+    // the Leafage vines: a loose chain from each hand, swung around by the hand and wiggling on its own (Verlet)
+    V vine[2][kVineN], vine_prev[2][kVineN];
+    bool vine_live[2] = {};
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -354,6 +358,46 @@ void hud_band(float out[4]) {
     const float scale = static_cast<float>(settings::get_double(settings::Key::VrHudScale));
     out[0] = .5f - .5f * scale, out[1] = .5f - .28125f * scale, out[2] = scale, out[3] = .5625f * scale;
 }
+// Leafage: a long vine grows from the hand, Ditto purple where it leaves the hand and leaf green toward the tip. It is a loose chain:
+// the hand drags its root around, the rest follows with a little lag and a wiggle of its own, so a fast whip of the hand cracks it.
+// [vr] vine_length in metres.
+void vine(const HandFrame &f, int h, float grow, uint64_t now) {
+    static const float length = vr_value("vine_length", 1.3, 0.3, 3.0);
+    static uint64_t last[2] = {};
+    const float dt = last[h] ? std::clamp(static_cast<float>(now - last[h]) * 1e-9f, .001f, .05f) : .011f;
+    last[h] = now;
+    V *p = g.vine[h], *q = g.vine_prev[h];
+    const V root = hand_point(f, {0, .55f, 0}), out = norm(hand_dir(f, {0, 1, 0}));
+    const float seg = length * std::max(grow, .05f) / (kVineN - 1);
+    if (!g.vine_live[h]) {
+        for (int i = 0; i < kVineN; ++i) p[i] = q[i] = root + out * (seg * i);
+        g.vine_live[h] = true;
+    }
+    const float t = static_cast<float>(now % 100000000000ull) * 1e-9f;
+    const V side = norm(cross(out, std::fabs(out.y) < .9f ? V{0, 1, 0} : V{1, 0, 0})), lift = cross(out, side);
+    for (int i = 1; i < kVineN; ++i) {   // move: keep momentum (damped), sag a little, wiggle like it is alive
+        const float u = static_cast<float>(i) / (kVineN - 1);
+        const V wiggle = side * (std::sin(t * 7 + u * 9 + h * 2) * 2.2f * u) + lift * (std::cos(t * 5.5f + u * 7) * 1.6f * u);
+        const V acc = V{0, -2.f, 0} + wiggle + out * 3.f;   // a pull outward keeps it reaching away from the hand
+        const V now_p = p[i];
+        p[i] = p[i] + (p[i] - q[i]) * .94f + acc * (dt * dt);
+        q[i] = now_p;
+    }
+    p[0] = q[0] = root;
+    for (int pass = 0; pass < 4; ++pass)   // keep each link its length
+        for (int i = 1; i < kVineN; ++i) {
+            V d = p[i] - p[i - 1];
+            const float l = std::sqrt(dot(d, d));
+            if (l < 1e-5f) d = out * seg;
+            else d = d * (seg / l);
+            p[i] = p[i - 1] + d;
+        }
+    for (int i = 1; i < kVineN; ++i) {   // draw: thick and purple at the hand, thin and green at the tip
+        const float u0 = static_cast<float>(i - 1) / (kVineN - 1), u1 = static_cast<float>(i) / (kVineN - 1);
+        const Color col = mix(kDitto, {.30f, .78f, .25f}, std::min(1.f, u1 * 1.6f));
+        tube(p[i - 1], p[i], .016f * (1 - u0 * .7f), .016f * (1 - u1 * .7f), col, i == kVineN - 1);
+    }
+}
 void pulse(uint64_t buttons, uint64_t now) {
     g.pulse = buttons;
     g.pulse_until = now + 120000000ull;
@@ -409,7 +453,8 @@ void game_frame(::Ctx *c) {
     const uint8_t skill = guest::ok(character + kSelectedSkill, 1) ? guest::rd<uint8_t>(character + kSelectedSkill) : 0;
     if (skill != g.skill) NXLOG_I("vr", "selected move %u", skill);
     g.skill = skill;
-    const bool cutting = skill == kCutSkill;
+    const bool cutting = skill == kCutSkill, leafage = skill == kLeafageSkill;
+    const bool morphing = cutting || leafage;   // a move whose hands morph while a grip is squeezed
     {   // the morph: with Cut selected, squeezing a grip melts that hand into a purple blob and a blade grows out of it, and back
         // a moment after letting go (so a swing that ends with the grip open keeps its blade); about a third of a second each way
         static uint64_t last = now;
@@ -417,8 +462,8 @@ void game_frame(::Ctx *c) {
         last = now;
         for (int h = 0; h < 2; ++h) {
             const xr::HandView &hv = h ? right : left;
-            if (cutting && hv.squeeze > .6f) g.raised_until[h] = now + 300000000ull;
-            const bool claws = cutting && now < g.raised_until[h];
+            if (morphing && hv.squeeze > .6f) g.raised_until[h] = now + 300000000ull;
+            const bool claws = morphing && now < g.raised_until[h];
             g.morph[h] = std::clamp(g.morph[h] + (claws ? dt : -dt) / .35f, 0.f, 1.f);
         }
     }
@@ -426,13 +471,15 @@ void game_frame(::Ctx *c) {
         for (int h = 0; h < 2; ++h) {
             const HandFrame &f = h ? right_frame : left_frame;
             const float m = g.morph[h];
+            if (m < .5f || !leafage) g.vine_live[h] = false;
             if (!f.valid) continue;
             if (m <= 0) {
                 glove(f, h ? right : left);
                 continue;
             }
             if (m < .5f) glove(f, h ? right : left, 1 - 1.6f * m);
-            else blade(f, (m - .5f) * 2);
+            else if (cutting) blade(f, (m - .5f) * 2);
+            else if (leafage) vine(f, h, (m - .5f) * 2, now);
             // the blob: swells while the hand melts, shrinks as the blade forms
             const float blob = (m < .5f ? m * 2 : (1 - m) * 2) * .30f * f.size;
             if (blob > .002f) {
@@ -492,19 +539,22 @@ void game_frame(::Ctx *c) {
         g.touching = false;
     }
     uint64_t capture = g.touching ? hid::btn(hid::kBtnZR) : 0;
-    if (cutting && left.grip.valid) {   // left grip: the claw while held; a quick tap is still L
-        capture |= hid::btn(hid::kBtnL);
-        const bool held = left.squeeze > .5f;
-        if (held && !g.left_grip_was) g.left_grip_start = now;
-        if (!held && g.left_grip_was && now - g.left_grip_start < 300000000ull) pulse(hid::btn(hid::kBtnL), now);
-        g.left_grip_was = held;
-    } else {
-        g.left_grip_was = false;
+    for (int h = 0; h < 2; ++h) {   // with Cut or Leafage selected the grips grow claws or vines; a quick tap is still L or R
+        const xr::HandView &hv = h ? right : left;
+        if (!morphing || !hv.grip.valid) {
+            g.grip_tap_was[h] = false;
+            continue;
+        }
+        capture |= hid::btn(h ? hid::kBtnR : hid::kBtnL);
+        const bool held = hv.squeeze > .5f;
+        if (held && !g.grip_tap_was[h]) g.grip_tap_start[h] = now;
+        if (!held && g.grip_tap_was[h] && now - g.grip_tap_start[h] < 300000000ull) pulse(hid::btn(h ? hid::kBtnR : hid::kBtnL), now);
+        g.grip_tap_was[h] = held;
     }
     // Cut by swinging: a fast swing of either hand while it is a blade uses the move.
     for (int h = 0; h < 2; ++h) {
         const xr::HandView &hv = h ? right : left;
-        if (!cutting || g.morph[h] < .5f || !hv.grip.valid) {
+        if (!morphing || g.morph[h] < .5f || !hv.grip.valid) {
             g.swing_time[h] = 0;
             continue;
         }
@@ -517,7 +567,7 @@ void game_frame(::Ctx *c) {
                 pulse(hid::btn(hid::kBtnZR), now);
                 g.cut_cooldown = now + 450000000ull;
                 xr::haptic(h, .35f, .05f);
-                NXLOG_I("vr", "gesture cut: %s swing %.1f m/s", h ? "right" : "left", static_cast<double>(speed));
+                NXLOG_I("vr", "gesture %s: %s swing %.1f m/s", cutting ? "cut" : "leafage", h ? "right" : "left", static_cast<double>(speed));
             }
         }
         g.swing_prev[h] = p;
@@ -545,7 +595,8 @@ void game_frame(::Ctx *c) {
             last = p;
         }
     }
-    const bool whip_controls = settings::get_bool(settings::Key::VrWhipCast) && play_camera_free() && right.grip.valid && !g.touching;
+    const bool whip_controls =
+        settings::get_bool(settings::Key::VrWhipCast) && play_camera_free() && right.grip.valid && !g.touching && !morphing;
     if (whip_controls) {
         capture |= hid::btn(hid::kBtnR);
         const bool held = right.squeeze > .65f;
