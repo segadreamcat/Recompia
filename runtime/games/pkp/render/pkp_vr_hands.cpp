@@ -72,6 +72,8 @@ struct State {
     // the Leafage vines: a loose chain from each hand, swung around by the hand and wiggling on its own (Verlet)
     V vine[2][kVineN], vine_prev[2][kVineN];
     bool vine_live[2] = {};
+    uint64_t lash_ns[2] = {};   // a whip just used Leafage: the vine lashes out along the swing
+    V lash_dir[2];
     V swing_prev[2];
     uint64_t swing_time[2] = {}, cut_cooldown = 0;
     xr::SpatialScene scene;
@@ -368,7 +370,10 @@ void vine(const HandFrame &f, int h, float grow, uint64_t now) {
     last[h] = now;
     V *p = g.vine[h], *q = g.vine_prev[h];
     const V root = hand_point(f, {0, .55f, 0}), out = norm(hand_dir(f, {0, 1, 0}));
-    const float seg = length * std::max(grow, .05f) / (kVineN - 1);
+    // a lash: for about half a second after a whip the vine stretches out and its tip is flung along the swing
+    const float lt = g.lash_ns[h] ? static_cast<float>(now - g.lash_ns[h]) * 1e-9f / .5f : 1.f;
+    const float lash = lt < 1 ? std::sin(kPi * lt) : 0.f;
+    const float seg = length * std::max(grow, .05f) * (1 + .7f * lash) / (kVineN - 1);
     if (!g.vine_live[h]) {
         for (int i = 0; i < kVineN; ++i) p[i] = q[i] = root + out * (seg * i);
         g.vine_live[h] = true;
@@ -378,9 +383,10 @@ void vine(const HandFrame &f, int h, float grow, uint64_t now) {
     for (int i = 1; i < kVineN; ++i) {   // move: keep momentum (damped), sag a little, wiggle like it is alive
         const float u = static_cast<float>(i) / (kVineN - 1);
         const V wiggle = side * (std::sin(t * 7 + u * 9 + h * 2) * 2.2f * u) + lift * (std::cos(t * 5.5f + u * 7) * 1.6f * u);
-        const V acc = V{0, -2.f, 0} + wiggle + out * 3.f;   // a pull outward keeps it reaching away from the hand
+        V acc = V{0, -2.f, 0} + wiggle * (1 - lash) + out * 2.f;   // a pull outward keeps it reaching away from the hand
+        if (lash > 0) acc = acc + g.lash_dir[h] * (60.f * u * (1 - lt));   // the crack runs out toward the tip
         const V now_p = p[i];
-        p[i] = p[i] + (p[i] - q[i]) * .94f + acc * (dt * dt);
+        p[i] = p[i] + (p[i] - q[i]) * .975f + acc * (dt * dt);   // little damping: it keeps swinging, like a vine
         q[i] = now_p;
     }
     p[0] = q[0] = root;
@@ -565,6 +571,7 @@ void game_frame(::Ctx *c) {
             const float speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
             if (speed > vr_value("cut_speed", 1.8, 0.8, 5.0)) {
                 pulse(hid::btn(hid::kBtnZR), now);
+                if (leafage) g.lash_ns[h] = now, g.lash_dir[h] = v * (1 / speed);
                 g.cut_cooldown = now + 450000000ull;
                 xr::haptic(h, .35f, .05f);
                 NXLOG_I("vr", "gesture %s: %s swing %.1f m/s", cutting ? "cut" : "leafage", h ? "right" : "left", static_cast<double>(speed));
@@ -576,25 +583,8 @@ void game_frame(::Ctx *c) {
     const uint64_t manager = guest::deref(g.base + layout::kPlayerManager), player = guest::deref(manager + layout::kManagerPlayer),
                    component = guest::deref(player + layout::kAction);
     const uint16_t action = guest::ok(component, layout::kActionId + 2) ? guest::rd<uint16_t>(component + layout::kActionId) : 0;
-    if (action == 878 && g.action != 878 && right.aim.valid) {
-        g.vine_start = now;
-        g.vine_origin = vec(right.grip.valid ? right.grip.pos : right.aim.pos);
-        g.vine_direction = rotate(right.aim.quat, {0, 0, -1});
-    }
     if(g.action!=action) NXLOG_I("vr","diagnostic native action %u",action);
     g.action = action;
-    if (g.vine_start && now - g.vine_start < 700000000ull) {
-        float t = static_cast<float>((now - g.vine_start) * 1e-9);
-        float reach = 1.8f * std::sin(kPi * std::min(t / .7f, 1.f));
-        V last = g.vine_origin;
-        for (int i = 1; i <= 14; ++i) {
-            float u = i / 14.f;
-            V p = g.vine_origin + g.vine_direction * (reach * u) +
-                  V{.06f * std::sin(u * 12 - t * 18) * u, -.16f * u * u, .025f * std::cos(u * 10) * u};
-            tube(last, p, .014f * (1 - u * .65f), .014f * (1 - u * .7f), green);
-            last = p;
-        }
-    }
     const bool whip_controls =
         settings::get_bool(settings::Key::VrWhipCast) && play_camera_free() && right.grip.valid && !g.touching && !morphing;
     if (whip_controls) {
